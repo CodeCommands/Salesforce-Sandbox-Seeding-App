@@ -8,6 +8,7 @@ A template exported **with record data** (`*.seed-data.json`, `schemaVersion` 2)
 {
   "format": "sf-sandbox-seeding-template",
   "schemaVersion": 1,
+  "templateId": "3f6c2a9e-8d41-4b7a-9c55-2e1f0b7d4a10",
   "name": "Partner accounts with contacts",
   "description": "",
   "createdAt": "2026-11-04T10:00:00.000Z",
@@ -68,6 +69,7 @@ A template exported **with record data** (`*.seed-data.json`, `schemaVersion` 2)
 | --- | --- | --- |
 | `format` | string | Always `sf-sandbox-seeding-template`. Optional on import. |
 | `schemaVersion` | number | `1` (plan only) or `2` (has `data`). Templates from a newer version are rejected. |
+| `templateId` | string (UUID) | Permanent identity of the template. It stays the same when the template is edited, exported or imported, so earlier runs of it in a Target org can be found (see run history in the README). **New** and **Make a separate copy** create a new one. Missing or invalid on import: a new one is assigned (export again to keep it). |
 | `data` | object | Optional. Captured records; see below. |
 | `name`, `description` | string | Shown in the app. |
 | `settings` | object | See below. Missing keys fall back to defaults. |
@@ -151,7 +153,7 @@ Present only in templates exported with **Plan + record data**. The insert uses 
   "keyPrefixes": { "001": "Account", "003": "Contact", "005": "User" },
   "objects": { "Account": { "name": "Account", "label": "Account", "labelPlural": "Accounts", "keyPrefix": "001", "fields": [ { "name": "Name", "type": "string", "createable": true, "nillable": false } ] } },
   "users": { "005…": { "Username": "ada@acme.com", "Name": "Ada", "IsActive": true } },
-  "steps": { "accounts": { "records": [ { "Id": "001…", "Name": "Acme", "OwnerId": "005…", "RecordTypeId": null, "RecordType": null } ], "stats": {} } }
+  "steps": { "accounts": { "records": [ { "Id": "001…", "Name": "Acme", "OwnerId": "005…" } ] } }
 }
 ```
 
@@ -160,8 +162,8 @@ Present only in templates exported with **Plan + record data**. The insert uses 
 | `format` | Always `records-v1`. Unknown formats are dropped with a warning; the plan still imports. |
 | `source` | The org the records came from. Used for messages, the same-org check and sandbox-suffix detection when matching users. |
 | `keyPrefixes` | Id prefix → object for every lookup value in the records, so the app can tell a User Id from an Account Id. |
-| `objects` | Trimmed Source describes (field name, type, `referenceTo`, `createable`, `nillable`…) for each step's object. These decide which fields are inserted and how lookups are handled. |
+| `objects` | Trimmed Source describes for each step's object, listing only the fields the captured records use (plus `Id` and the name field). Each field has `name`, `type` and only the non-default flags: `label` when it differs from `name`, `referenceTo`, `relationshipName`, `nillable: false`, and `createable` / `updateable` / `defaultedOnCreate` / `nameField` / `filterable` / `sortable` when `true`. These decide which fields are inserted and how lookups are handled. |
 | `users` | Username of every User referenced by a lookup, for *Match users by Username*. |
-| `steps` | Keyed by step `id`. `records` are the Source records exactly as queried (minus the REST `attributes` blocks), including `RecordType.DeveloperName` and `NamespacePrefix`. Records whose `Id` is not a valid 15/18-character Id are ignored. |
+| `steps` | Keyed by step `id`. `records` are the Source records as queried, minus the REST `attributes` blocks and blank (`null`) fields, including `RecordType.DeveloperName` and `NamespacePrefix`. Records whose `Id` is not a valid 15/18-character Id are ignored. |
 
 Steps without an entry insert nothing. The step fields (`filters`, `limit`, links…) are kept for reference and for capturing again. They are not re-applied to the captured records.

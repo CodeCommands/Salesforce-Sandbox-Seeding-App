@@ -198,3 +198,37 @@ test('captured data with an unknown format is dropped with a warning, the plan s
   assert.equal(snapshot, null);
   assert.ok(warnings.some((w) => /could not be used/.test(w)));
 });
+
+test('captured data stays small: only used fields are described, blank values and default flags are left out', async () => {
+  const d = describes();
+  const rows = {
+    Account: [{ Id: A(1), Name: 'Acme', Industry: null, OwnerId: U(1), ...noRt }],
+    User: [{ Id: U(1), Username: 'ada@acme.com', Name: 'Ada', IsActive: true }],
+  };
+  const plan = newPlan('small');
+  const acc = newStep('Account');
+  acc.fieldMode = 'selected';
+  acc.fields = ['Name', 'OwnerId'];
+  plan.steps = [acc];
+  const snap = await captureSnapshot({
+    source: new MockSource(d.source, rows), plan, appSettings: APP_SETTINGS, sourceKeyPrefixes: KEY_PREFIXES, log: () => {}, progress: () => {},
+    sourceInfo: { orgId: '00DS', orgName: 'Acme Prod' },
+  });
+  const rec = snap.steps[acc.id].records[0];
+  assert.ok(!('Industry' in rec) && !('RecordTypeId' in rec), 'null values are dropped');
+  const names = snap.objects.Account.fields.map((f) => f.name).sort();
+  assert.deepEqual(names, ['Id', 'Name', 'OwnerId'], 'only the copied fields, Id and the name field');
+
+  const doc = toTemplate(plan, { snapshot: snap });
+  const owner = doc.data.objects.Account.fields.find((f) => f.name === 'OwnerId');
+  for (const [k, v] of Object.entries(owner)) if (k !== 'nillable') assert.notEqual(v, false, `${k}: false flags are left out`);
+
+  // The compact form round-trips to the same field definitions.
+  const { snapshot } = parseTemplate(JSON.stringify(doc));
+  const back = snapshot.objects.Account.fields.find((f) => f.name === 'OwnerId');
+  const orig = snap.objects.Account.fields.find((f) => f.name === 'OwnerId');
+  assert.equal(back.type, orig.type);
+  assert.equal(back.nillable, orig.nillable !== false);
+  for (const k of ['createable', 'updateable', 'defaultedOnCreate', 'filterable']) assert.equal(back[k], !!orig[k], k);
+  assert.deepEqual(back.referenceTo, orig.referenceTo);
+});

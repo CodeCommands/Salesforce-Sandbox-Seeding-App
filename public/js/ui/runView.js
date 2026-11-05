@@ -3,7 +3,7 @@ import { h, clear, fmtNum, plural } from '../util.js';
 import { state, on, runsFromSnapshot, snapshotState } from '../store.js';
 import { snapshotSummary } from '../snapshot.js';
 import {
-  validate, execute, stop, isBusy, rollbackRun, rollbackCandidates, downloadIdMap, downloadFailures, downloadLog, clearLog,
+  validate, execute, stop, isBusy, deleteSeededRecords, seededRuns, downloadIdMap, downloadFailures, downloadLog, clearLog,
 } from '../runController.js';
 import { badge, confirmModal, emptyState } from './components.js';
 import { openRelatedDialog } from './relatedDialog.js';
@@ -69,8 +69,10 @@ export function renderRunView(container) {
     if (run.extraction || run.result) view.appendChild(resultsCard(run));
   }
   if (!busy && run && run.related && run.related.length && run.extraction && !run.extraction.fromSnapshot) view.appendChild(relatedCard(run));
-  const rb = !busy ? rollbackCandidates() : null;
-  if (rb) view.appendChild(rollbackCard(rb));
+  if (!busy && targetOk) {
+    const seeded = seededRuns();
+    if (seeded.mine.length || seeded.others.length) view.appendChild(seededCard(seeded));
+  }
 
   view.appendChild(logCard(logEl));
   container.appendChild(view);
@@ -168,27 +170,59 @@ function relatedCard(run) {
     run.related.length > 6 ? h('p', { class: 'small muted' }, `…and ${run.related.length - 6} more.`) : null);
 }
 
-function rollbackCard(rb) {
-  return h('div', { class: 'card rollback-card' },
+const countRecs = (runs) => runs.reduce((n, r) => n + r.created.length, 0);
+
+/** One line per object: "3 Accounts, 4 Contacts". */
+function byObject(run) {
+  const m = new Map();
+  for (const c of run.created) m.set(c.o, (m.get(c.o) || 0) + 1);
+  return [...m].map(([o, n]) => `${fmtNum(n)} ${o}`).join(', ');
+}
+
+async function confirmDelete(runs) {
+  const t = state.conn.target.org;
+  const n = countRecs(runs);
+  const ok = await confirmModal({
+    title: `Delete ${plural(n, 'seeded record')}?`,
+    message: h('div', null,
+      h('p', null, `${plural(n, 'record')} created by ${runs.length === 1 ? 'this run' : `these ${runs.length} runs`} will be deleted from `, h('strong', null, t ? t.Name : 'the Target org'), ' (newest first). They go to the Recycle Bin.'),
+      h('p', { class: 'muted small' }, 'Only records this app inserted are deleted. Records that triggers or flows created alongside them are not tracked. Records someone already deleted are skipped.')),
+    confirmLabel: 'Delete records',
+    danger: true,
+    requireText: 'DELETE',
+  });
+  if (ok) deleteSeededRecords(runs.map((r) => r.id));
+}
+
+function runRow(run) {
+  const when = new Date(run.startedAt).toLocaleString();
+  const from = run.dataFrom === 'captured' ? `captured data from ${run.sourceOrgName || 'the Source org'}` : run.sourceOrgName ? `from ${run.sourceOrgName}` : '';
+  return h('li', { class: 'seeded-run' },
+    h('div', { class: 'seeded-run-text' },
+      h('div', null, h('strong', null, run.templateName || 'Unnamed template'), h('span', { class: 'muted small' }, ` · ${when}`),
+        run.status === 'running' ? badge('interrupted', 'warning', 'The page was closed or failed during this run; the records inserted until then are listed') : null,
+        run.status === 'stopped' ? badge('stopped', 'neutral') : null),
+      h('div', { class: 'small muted' }, `${byObject(run)}${from ? ` · ${from}` : ''}${run.targetUser ? ` · by ${run.targetUser}` : ''}`)),
+    h('button', { class: 'btn btn-small btn-danger-ghost', onclick: () => confirmDelete([run]) }, `Delete ${plural(run.created.length, 'record')}`));
+}
+
+/** Records created by runs in this Target org that are still tracked, this template's runs first. */
+function seededCard({ mine, others }) {
+  const t = state.conn.target.org;
+  const org = t ? t.Name : 'this Target org';
+  return h('div', { class: 'card seeded-card' },
     h('div', { class: 'section-title' },
-      h('h3', null, 'Undo'),
-      h('p', { class: 'muted small' }, rb.source === 'stored'
-        ? `A previous run in this browser created ${plural(rb.created.length, 'record')} in this Target org: ${rb.label}.`
-        : `This run created ${plural(rb.created.length, 'record')} in the Target org.`)),
-    h('button', {
-      class: 'btn btn-danger-ghost',
-      onclick: async () => {
-        const t = state.conn.target.org;
-        const ok = await confirmModal({
-          title: 'Delete the records created by this run?',
-          message: `${plural(rb.created.length, 'record')} will be deleted from ${t ? t.Name : 'the Target org'} (newest first). They go to the Recycle Bin. Records created by triggers or flows are not tracked and will not be removed.`,
-          confirmLabel: 'Delete records',
-          danger: true,
-          requireText: 'DELETE',
-        });
-        if (ok) rollbackRun();
-      },
-    }, `Delete ${plural(rb.created.length, 'created record')}`));
+      h('h3', null, 'Seeded records in ', org),
+      h('p', { class: 'muted small' }, 'Runs from this browser that created records in this org. Delete them to undo a run, or to clean up before seeding the same template again.')),
+    mine.length ? [
+      h('div', { class: 'seeded-head' },
+        h('h4', null, `This template: ${plural(mine.length, 'run')}, ${plural(countRecs(mine), 'record')}`),
+        mine.length > 1 ? h('button', { class: 'btn btn-small btn-danger-ghost', onclick: () => confirmDelete(mine) }, `Delete all ${plural(countRecs(mine), 'record')}`) : null),
+      h('ul', { class: 'seeded-list' }, mine.map(runRow)),
+    ] : h('p', { class: 'small muted' }, 'No records from this template are tracked in this org.'),
+    others.length ? h('details', { class: 'advanced' },
+      h('summary', null, `Other templates: ${plural(others.length, 'run')}, ${plural(countRecs(others), 'record')}`),
+      h('ul', { class: 'seeded-list' }, others.map(runRow))) : null);
 }
 
 function logCard(logEl) {
@@ -236,7 +270,10 @@ function confirmRun(summary) {
       h('p', null, 'Into ', h('strong', null, summary.targetName), prod ? h('strong', { class: 'danger-text' }, ' (PRODUCTION)') : ' (sandbox)', ':'),
       list,
       summary.warnings ? h('p', { class: 'warning-text small' }, `${plural(summary.warnings, 'pre-flight warning')}: review the report before continuing.`) : null,
-      h('p', { class: 'muted small' }, 'Records are inserted in batches with partial success allowed. You can stop at any time and roll back what was created.')),
+      summary.earlier && summary.earlier.records ? h('p', { class: 'callout callout-warning small' },
+        h('strong', null, 'This template was already run in this org. '),
+        `${plural(summary.earlier.records, 'record')} from ${plural(summary.earlier.runs, 'earlier run')} ${summary.earlier.records === 1 ? 'is' : 'are'} still there, so this run adds a second copy. To replace them instead, cancel and use "Delete" under "Seeded records" first.`) : null,
+      h('p', { class: 'muted small' }, 'Records are inserted in batches with partial success allowed. You can stop at any time and delete what was created.')),
     confirmLabel: 'Insert records',
     danger: prod,
     requireText: prod ? summary.targetName : null,

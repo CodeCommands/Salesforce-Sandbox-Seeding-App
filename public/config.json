@@ -1,6 +1,5 @@
 {
   "clientId": "",
-  "transport": "proxy",
   "scopes": "api",
   "maxRecordsPerObject": 10000,
   "warnTotalRecords": 5000,

@@ -26,8 +26,8 @@ export function renderConnectView(container) {
     whichOrgsNote(),
     h('div', { class: 'org-grid' }, orgCard('source'), h('div', { class: 'org-arrow', 'aria-hidden': 'true' }, '→'), orgCard('target')),
     h('p', { class: 'muted small' },
-      `Transport: ${state.settings.transport === 'proxy' ? 'Local proxy (via the start script)' : 'Direct (browser to Salesforce; requires CORS allowlist)'} · Sign-in: OAuth 2.0 + PKCE · API version: newest per org · `,
-      h('button', { class: 'link-btn', onclick: openSettings }, 'Change'))));
+      'Sign-in: OAuth 2.0 + PKCE · API version: newest per org · Shared Consumer Key and safety limits: ',
+      h('button', { class: 'link-btn', onclick: openSettings }, 'Settings'))));
 }
 
 /** Which connections the current plan needs. */

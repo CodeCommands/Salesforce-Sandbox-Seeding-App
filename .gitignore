@@ -1,4 +1,6 @@
 # Exported plans and run outputs that may contain org details
+Template/
+*.seed-data.json
 *-id-map.csv
 *-errors.csv
 *-log.txt

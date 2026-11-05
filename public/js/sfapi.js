@@ -14,25 +14,20 @@ export class SfError extends Error {
   }
 }
 
-/** Send a request either straight to Salesforce (CORS) or through the local PowerShell proxy. */
-export function transportFetch(transport, url, init) {
-  if (transport === 'proxy') {
-    const headers = { ...(init.headers || {}), 'X-SF-Endpoint': url };
-    return fetch('/api/proxy', { ...init, headers });
-  }
-  return fetch(url, init);
+/** Sends a request through the local server's relay (server.ps1 / server.pl), which forwards it to Salesforce. */
+export function proxyFetch(url, init) {
+  const headers = { ...(init.headers || {}), 'X-SF-Endpoint': url };
+  return fetch('/api/proxy', { ...init, headers });
 }
 
-function networkError(err, transport, url) {
+function networkError(err, url) {
   let host = url;
   try {
     host = new URL(url).host;
   } catch {
     /* keep raw */
   }
-  const hint = transport === 'direct'
-    ? ` If this is the first call to this org, its CORS allowlist probably does not include ${window.location.origin} (Setup > CORS), or switch Transport to "Local proxy" in Settings.`
-    : ' Check that the start script (start.bat on Windows, start.command on macOS) is still running and that this computer can reach Salesforce (corporate proxy / firewall).';
+  const hint = ' Check that the start script (start.bat on Windows, start.command on macOS) is still running and that this computer can reach Salesforce (corporate proxy / firewall).';
   return new SfError(`Network error calling ${host}: ${err.message || err}.${hint}`, { status: 0, errorCode: 'NETWORK' });
 }
 
@@ -53,11 +48,10 @@ export function parseSfError(status, data) {
 }
 
 export class SfClient {
-  constructor({ instanceUrl, accessToken, apiVersion, transport = 'direct', label = '', onUnauthorized = null }) {
+  constructor({ instanceUrl, accessToken, apiVersion, label = '', onUnauthorized = null }) {
     this.instanceUrl = String(instanceUrl).replace(/\/+$/, '');
     this.accessToken = accessToken;
     this.apiVersion = apiVersion;
-    this.transport = transport;
     this.label = label;
     this.onUnauthorized = onUnauthorized;
     this.callCount = 0;
@@ -97,14 +91,14 @@ export class SfClient {
       let res;
       try {
         this.callCount++;
-        res = await transportFetch(this.transport, url, { method, headers: h, body: payload, signal, cache: 'no-store', credentials: 'omit' });
+        res = await proxyFetch(url, { method, headers: h, body: payload, signal, cache: 'no-store', credentials: 'omit' });
       } catch (err) {
         if (err && err.name === 'AbortError') throw err;
         if (attempt < maxAttempts) {
           await sleep(400 * attempt * attempt, signal);
           continue;
         }
-        throw networkError(err, this.transport, url);
+        throw networkError(err, url);
       }
       if (res.status === 204) return null;
       const text = await res.text();
@@ -121,7 +115,7 @@ export class SfClient {
         await sleep(800 * attempt * attempt, signal);
         continue;
       }
-      if (res.status === 502 && this.transport === 'proxy' && data && data.proxyError) {
+      if (res.status === 502 && data && data.proxyError) {
         throw new SfError(`Local proxy could not reach Salesforce: ${data.proxyError}`, { status: 502, errorCode: 'PROXY' });
       }
       const err = parseSfError(res.status, data);

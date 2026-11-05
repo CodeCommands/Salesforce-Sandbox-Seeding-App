@@ -8,7 +8,6 @@ export const FALLBACK_API_VERSION = '68.0';
 
 export const DEFAULT_SETTINGS = Object.freeze({
   clientId: '', // External Client App consumer key (used for every org unless overridden on the Connect tab)
-  transport: 'proxy', // 'proxy' (browser -> local server (server.ps1 / server.pl) -> Salesforce) | 'direct' (browser -> Salesforce, needs CORS allowlist)
   scopes: 'api',
   maxRecordsPerObject: 10000, // hard ceiling for any step LIMIT
   warnTotalRecords: 5000, // global warning threshold for one run
@@ -33,7 +32,6 @@ export function getSettings() {
   const merged = { ...DEFAULT_SETTINGS, ...pickKnown(fileConfig), ...pickKnown(overrides) };
   merged.maxRecordsPerObject = clampInt(merged.maxRecordsPerObject, 1, 50000, DEFAULT_SETTINGS.maxRecordsPerObject);
   merged.warnTotalRecords = clampInt(merged.warnTotalRecords, 1, 1000000, DEFAULT_SETTINGS.warnTotalRecords);
-  if (merged.transport !== 'direct') merged.transport = 'proxy';
   return merged;
 }
 

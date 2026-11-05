@@ -3,7 +3,7 @@
 import { chunk, plural } from './util.js';
 import { quote } from './soql.js';
 import { selectedSourceFields } from './schema.js';
-import { effectiveRecordSource } from './template.js';
+import { effectiveRecordSource, stripEmpty, keptFieldNames } from './template.js';
 import { extract } from './engine.js';
 import { activeSteps } from './preflight.js';
 
@@ -20,7 +20,12 @@ export function dataSignature(plan) {
   ]));
 }
 
-function trimDescribe(d) {
+/**
+ * The parts of a describe a captured run needs, for the fields in `keep` only (see keptFieldNames)
+ * plus Id and the name field. Full describes are large; most fields are never copied.
+ */
+function trimDescribe(d, keep) {
+  const nameField = (d.fields.find((f) => f.nameField) || {}).name;
   return {
     name: d.name,
     label: d.label,
@@ -28,18 +33,8 @@ function trimDescribe(d) {
     keyPrefix: d.keyPrefix || null,
     queryable: true,
     createable: d.createable !== false,
-    fields: d.fields.map((f) => Object.fromEntries(DESCRIBE_KEYS.filter((k) => f[k] !== undefined).map((k) => [k, f[k]]))),
+    fields: d.fields.filter((f) => f.name === 'Id' || f.name === nameField || keep.has(f.name)).map((f) => Object.fromEntries(DESCRIBE_KEYS.filter((k) => f[k] !== undefined).map((k) => [k, f[k]]))),
   };
-}
-
-/** Removes the REST "attributes" blocks (type/url) at any depth. */
-function cleanRecord(r) {
-  const out = {};
-  for (const [k, v] of Object.entries(r)) {
-    if (k === 'attributes') continue;
-    out[k] = v && typeof v === 'object' && !Array.isArray(v) ? cleanRecord(v) : v;
-  }
-  return out;
 }
 
 /**
@@ -53,12 +48,13 @@ export async function captureSnapshot(ctx) {
   const keyPrefixes = {};
   const userIds = new Set();
   const steps = {};
+  const describes = new Map();
   for (const step of extraction.steps) {
     const d = await source.describe(step.object);
-    objects[d.name] = trimDescribe(d);
+    describes.set(d.name, d);
     if (d.keyPrefix) keyPrefixes[d.keyPrefix] = d.name;
     const refFields = selectedSourceFields(step, d).filter((f) => f.type === 'reference');
-    const records = (extraction.byStep.get(step.id) || []).map(cleanRecord);
+    const records = (extraction.byStep.get(step.id) || []).map(stripEmpty);
     for (const r of records) {
       for (const f of refFields) {
         const v = r[f.name];
@@ -69,8 +65,9 @@ export async function captureSnapshot(ctx) {
         if (obj === 'User') userIds.add(v);
       }
     }
-    steps[step.id] = { records, stats: extraction.stats.get(step.id) || {} };
+    steps[step.id] = { records };
   }
+  for (const [name, d] of describes) objects[name] = trimDescribe(d, keptFieldNames(ctx.plan, steps, name));
   const users = {};
   for (const ids of chunk([...userIds], 150)) {
     const recs = await source.queryAll(`SELECT Id, Username, Name, IsActive FROM User WHERE Id IN (${ids.map(quote).join(',')})`, { signal });

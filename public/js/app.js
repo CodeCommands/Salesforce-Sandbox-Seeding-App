@@ -172,14 +172,14 @@ function openHelp() {
   });
 }
 
-/** The default transport relays through the local server (server.ps1 or server.pl); warn early if the page was opened some other way. */
+/** Every Salesforce call goes through the local server (server.ps1 or server.pl); warn early if the page was opened some other way. */
 async function checkProxy() {
   try {
     const res = await fetch('/api/health', { cache: 'no-store' });
     const data = res.ok ? await res.json() : null;
     if (data && data.proxy) return;
   } catch { /* fall through */ }
-  toast('The local proxy is not available. Start the app with start.bat (Windows) or start.command (macOS), or switch Transport to "Direct" in Settings.', 'error', 8000);
+  toast('The app cannot reach Salesforce because it was not opened by the start script. Close this tab and start the app with start.bat (Windows) or start.command (macOS).', 'error', 10000);
 }
 
 async function boot() {
@@ -192,7 +192,7 @@ async function boot() {
   wireEvents();
   render();
   for (const w of repaired) toast(w, 'info', 10000);
-  if (state.settings.transport === 'proxy') await checkProxy();
+  await checkProxy();
   await restoreConnections();
   if (state.view === 'connect' && state.conn.source.status === 'connected' && state.conn.target.status === 'connected' && !sessionStorage.getItem('sfseed.view')) {
     go('plan');

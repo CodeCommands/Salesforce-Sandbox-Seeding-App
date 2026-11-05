@@ -1,13 +1,14 @@
 // Tab 2: build the seeding plan (objects, fields, filters, scopes, order).
-import { h, clear, fmtNum, plural } from '../util.js';
+import { h, clear, fmtNum, plural, uuid } from '../util.js';
 import { state, emit, planChanged, selectedStep, snapshotState, runsFromSnapshot, setSnapshot } from '../store.js';
 import { newFilter, DEFAULT_PLAN_SETTINGS, effectiveRecordSource, addLink, removeLink, linksOf } from '../template.js';
 import {
-  OPERATORS, operatorsFor, compileQuery, compileCountQuery, splitList, RECORD_TYPE_FIELD,
+  OPERATORS, operatorsFor, compileQuery, splitList, RECORD_TYPE_FIELD,
 } from '../soql.js';
 import { getField, isLookup, isRequiredOnCreate, seedableFields, qualifyRt, selectedSourceFields } from '../schema.js';
 import { dependencyEdges, suggestOrder, checkOrder, findLoop, wouldLoop } from '../planner.js';
-import { SnapshotSource, snapshotSummary, snapshotRecordCount } from '../snapshot.js';
+import { SnapshotSource, snapshotSummary, snapshotRecordCount, dataSignature } from '../snapshot.js';
+import { countRecords, isBusy } from '../runController.js';
 import { MAX_SOQL_GET_LENGTH } from '../sfapi.js';
 import { badge, emptyState, formRow, select, spinner, toast, confirmModal } from './components.js';
 import { openRelatedDialog } from './relatedDialog.js';
@@ -104,6 +105,10 @@ function planSettings() {
   const ps = state.plan.settings;
   return h('details', { class: 'plan-settings' },
     h('summary', null, 'Template settings'),
+    h('div', { class: 'template-id-row small' },
+      h('span', { class: 'muted' }, 'Template ID '), h('code', null, state.plan.templateId || '—'),
+      h('span', { class: 'muted' }, ' · stays the same when you edit, export or import this template, so its earlier runs in an org can be found and deleted. '),
+      h('button', { class: 'link-btn', onclick: separateCopy }, 'Make a separate copy')),
     h('div', { class: 'settings-row' },
       formRow('Keep Ids as-is for lookups to', h('input', {
         class: 'input', type: 'text', value: (ps.preserveLookupsTo || []).join(', '), placeholder: 'e.g. User, Pricebook2',
@@ -122,6 +127,21 @@ function planSettings() {
       h('label', { class: 'check-row' },
         h('input', { type: 'checkbox', checked: !!ps.disableAssignmentRules, onchange: (e) => { ps.disableAssignmentRules = e.target.checked; planChanged({ render: false }); } }),
         'Skip lead/case assignment rules (Sforce-Auto-Assign: FALSE)')));
+}
+
+/** Gives the plan a new template ID (and name), so its runs are tracked apart from the original's. */
+async function separateCopy() {
+  const ok = await confirmModal({
+    title: 'Make a separate copy?',
+    message: 'The plan gets a new template ID and "(copy)" is added to its name. Runs from now on are tracked under the copy; runs of the original stay with the original template. Use this when you turn an imported template into something different.',
+    confirmLabel: 'Make a copy',
+  });
+  if (!ok) return;
+  state.plan.templateId = uuid();
+  state.plan.name = `${state.plan.name} (copy)`;
+  state.plan.createdAt = new Date().toISOString();
+  planChanged();
+  toast('This plan is now a separate template.', 'success');
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +238,9 @@ function renderStepsPanel() {
     const issue = issuesByStep.get(step.id);
     const mode = effectiveRecordSource(step);
     const meta = [];
+    const live = liveCount(step);
     if (fromSnap && usable) meta.push(plural(snapshotRecordCount(state.snapshot, step), 'captured record'));
+    else if (live) meta.push(plural(live.extracted, 'record'));
     else if (mode !== 'referenced') meta.push(`LIMIT ${fmtNum(parseInt(step.limit, 10) || 0)}`);
     if ((step.filters || []).length) meta.push(plural(step.filters.length, 'filter'));
     if (step.fieldMode === 'selected') meta.push(plural(step.fields.length, 'field'));
@@ -327,6 +349,7 @@ function renderEditor() {
         'Enabled'),
       h('button', { class: 'btn btn-danger-ghost', onclick: () => removeStep(step) }, 'Remove'))));
 
+  panel.appendChild(h('div', { class: 'card' }, recordCountSection(step)));
   if (!src() && state.snapshot) {
     panel.appendChild(h('div', { class: 'card' }, capturedStepSection(step)));
     return;
@@ -495,15 +518,83 @@ function linksReadOnly(step) {
   return h('ul', { class: 'link-list' }, links.map((l) => h('li', { class: 'link-item' }, h('span', { class: 'link-text' }, linkSentence(l)))));
 }
 
+// ----- Record count -----
+
+/** Counts from the last "Count records", when the plan has not changed since. */
+function liveCount(step) {
+  const rc = state.recordCounts;
+  if (!rc || rc.signature !== dataSignature(state.plan)) return null;
+  return rc.stats.get(step.id) || null;
+}
+
+function breakdown(st) {
+  const parts = [];
+  if (st.byQuery) parts.push(`${fmtNum(st.byQuery)} matching the filters`);
+  if (st.byReference) parts.push(`${fmtNum(st.byReference)} linked from other steps`);
+  if (st.byHierarchy) parts.push(`${fmtNum(st.byHierarchy)} parent record${st.byHierarchy === 1 ? '' : 's'}`);
+  if (st.duplicates) parts.push(`${fmtNum(st.duplicates)} already taken by an earlier step (inserted once)`);
+  return parts.length > 1 || st.duplicates ? parts.join(', ') : '';
+}
+
+let counting = null; // AbortController while "Count records" runs
+
+/** How many records this step copies: captured count and/or a fresh count from the Source org. */
+function recordCountSection(step) {
+  const { snap, usable, stale } = snapshotState();
+  const s = src();
+  const rows = [];
+  if (snap && usable) {
+    const n = snapshotRecordCount(snap, step);
+    rows.push(h('dt', null, 'Captured'), h('dd', null, h('span', { class: 'count-big' }, plural(n, 'record')),
+      h('div', { class: 'small muted' }, snap.steps[step.id] ? snapshotSummary(snap) : 'Nothing was captured for this step (it was disabled or added after the capture).')));
+  } else if (snap && stale) {
+    rows.push(h('dt', null, 'Captured'), h('dd', { class: 'small muted' }, 'Out of date: the plan changed after the capture.'));
+  }
+  const rc = state.recordCounts;
+  const live = liveCount(step);
+  const out = h('div', { class: 'small muted' });
+  if (s) {
+    let value;
+    if (step.enabled === false) value = h('span', { class: 'muted' }, 'Disabled steps are not counted.');
+    else if (live) {
+      const lim = Math.min(parseInt(step.limit, 10) || 0, state.settings.maxRecordsPerObject);
+      const capped = effectiveRecordSource(step) !== 'referenced' && live.byQuery >= lim;
+      value = [h('span', { class: 'count-big' }, plural(live.extracted, 'record')),
+        h('div', { class: 'small muted' }, [breakdown(live), capped ? `LIMIT ${fmtNum(lim)} reached: more records match the filters` : '', `counted ${new Date(rc.at).toLocaleTimeString()}`].filter(Boolean).join(' · '))];
+    } else {
+      value = h('span', { class: 'muted small' }, rc ? 'The plan changed since the last count.' : 'Not counted yet.');
+    }
+    rows.push(h('dt', null, 'In the Source org now'), h('dd', null, value));
+  }
+  const btn = s ? h('button', {
+    class: 'btn btn-small',
+    disabled: !!counting || isBusy(),
+    onclick: async () => {
+      counting = new AbortController();
+      btn.disabled = true;
+      out.textContent = 'Counting: reading the records the plan selects (read-only)…';
+      try {
+        await countRecords({ signal: counting.signal });
+        counting = null;
+      } catch (e) {
+        counting = null;
+        btn.disabled = false;
+        out.textContent = `Could not count: ${e.message}`;
+      }
+    },
+  }, live ? 'Count again' : 'Count records') : null;
+  return h('div', null, ...section('Record count', s ? 'Counts every step of the plan the way a run would select records, including links between steps. Nothing is written.' : null,
+    rows.length ? h('dl', { class: 'count-rows' }, rows) : h('p', { class: 'muted small' }, 'Connect the Source org to count records.'),
+    btn ? h('div', { class: 'inline-actions' }, btn, out) : null));
+}
+
 /** Read-only view of a step when the plan runs from captured data without a Source connection. */
 function capturedStepSection(step) {
   const snap = state.snapshot;
   const c = describeClient();
   const d = c.peekDescribe(step.object);
-  const n = snapshotRecordCount(snap, step);
   const fields = d ? selectedSourceFields(step, d) : [];
-  return h('div', null, ...section('Captured records', null,
-    h('p', null, h('strong', null, plural(n, 'record')), ` of ${step.object} were captured for this step.`),
+  return h('div', null, ...section('Which records', null,
     !snap.steps[step.id] ? h('p', { class: 'callout callout-warning small' }, 'No records were captured for this step (it was disabled or added after capture), so it inserts nothing.') : null,
     linksReadOnly(step),
     d ? h('details', { class: 'advanced' }, h('summary', null, `${plural(fields.length, 'field')} copied`),
@@ -715,7 +806,6 @@ function fieldsSection(step, describe) {
 function previewSection(step, describe) {
   const code = h('pre', { class: 'soql' });
   const note = h('p', { class: 'small' });
-  const countOut = h('span', { class: 'small muted' });
   const update = () => {
     note.textContent = '';
     note.className = 'small';
@@ -749,20 +839,5 @@ function previewSection(step, describe) {
   };
   update();
   refs.preview = update;
-  const countBtn = h('button', {
-    class: 'btn btn-small',
-    onclick: async () => {
-      const s = src();
-      if (!s) return;
-      countOut.textContent = 'Counting…';
-      try {
-        const n = await s.client.count(compileCountQuery(step, describe));
-        const lim = Math.min(parseInt(step.limit, 10) || 0, state.settings.maxRecordsPerObject);
-        countOut.textContent = `${fmtNum(n)} matching in Source; ${fmtNum(Math.min(n, lim))} will be taken with LIMIT ${fmtNum(lim)}${(step.parentScopes || []).length ? ' (before parent scoping)' : ''}.`;
-      } catch (e) {
-        countOut.textContent = e.message;
-      }
-    },
-  }, 'Preview count');
-  return h('div', null, ...section('Generated SOQL', null, code, note, h('div', { class: 'inline-actions' }, countBtn, countOut)));
+  return h('div', null, ...section('Generated SOQL', null, code, note));
 }

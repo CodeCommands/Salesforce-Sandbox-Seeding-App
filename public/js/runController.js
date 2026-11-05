@@ -1,12 +1,13 @@
 // Orchestrates validation, dry runs, seeding runs and rollback; owns state.run and the run log.
-import { state, emit, getLastRun, saveLastRun, clearLastRun, runsFromSnapshot } from './store.js';
+import { state, emit, runsFromSnapshot } from './store.js';
+import { listRuns, saveRun, forgetRecords, runsInOrg } from './runHistory.js';
 import { staticPreflight, dataPreflight } from './preflight.js';
 import { extract, load, createLoadResult, rollback } from './engine.js';
 import { refreshLimits } from './connections.js';
 import { orgUserInfo } from './users.js';
 import { findMissingReferences, scanPlan } from './discovery.js';
-import { SnapshotSource, snapshotExtraction, snapshotKeyPrefixes, captureSnapshot } from './snapshot.js';
-import { timestamp, toCsv, downloadText, fileStamp, slugify, fmtNum, plural } from './util.js';
+import { SnapshotSource, snapshotExtraction, snapshotKeyPrefixes, captureSnapshot, dataSignature } from './snapshot.js';
+import { timestamp, toCsv, downloadText, fileStamp, slugify, fmtNum, plural, uid } from './util.js';
 
 const MAX_LOG = 5000;
 
@@ -187,12 +188,14 @@ export async function execute({ dryRun = false, confirm }) {
     }
 
     const t = state.conn.target.org;
+    const earlier = runsInOrg(t ? t.Id : '', state.plan.templateId).mine;
     const ok = await confirm({
       total: extraction.total,
       targetName: t ? t.Name : 'Target',
       targetIsSandbox: t ? t.IsSandbox : null,
       steps: extraction.steps.map((s) => ({ object: s.object, count: (extraction.byStep.get(s.id) || []).length })),
       warnings: [...sp.report.warnings, ...dp.report.warnings].length,
+      earlier: { runs: earlier.length, records: earlier.reduce((n, r) => n + r.created.length, 0) },
     });
     if (!ok) {
       log('info', 'Run cancelled before inserting.');
@@ -201,21 +204,36 @@ export async function execute({ dryRun = false, confirm }) {
 
     setLabel('Inserting records');
     run.result = createLoadResult();
-    const last = {
-      planName: state.plan.name,
+    const s = state.conn.source;
+    const rec = {
+      id: uid('run'),
+      templateId: state.plan.templateId,
+      templateName: state.plan.name,
       startedAt: run.startedAt,
+      finishedAt: null,
+      status: 'running',
       targetOrgId: t ? t.Id : '',
       targetOrgName: t ? t.Name : '',
       targetInstance: state.conn.target.session.instanceUrl,
+      targetUser: state.conn.target.user ? state.conn.target.user.Username : '',
+      dataFrom: c.fromSnapshot ? 'captured' : 'source',
+      sourceOrgName: c.fromSnapshot ? state.snapshot.source.orgName : (s.org ? s.org.Name : ''),
       created: [],
     };
-    saveLastRun(last);
+    run.historyRec = rec; // saved once the first records exist
     c.onCreated = (created) => {
-      for (const x of created) last.created.push({ o: x.object, s: x.sourceId, t: x.targetId });
-      saveLastRun(last);
+      for (const x of created) rec.created.push({ o: x.object, s: x.sourceId, t: x.targetId });
+      persistRun(rec);
       emit('run');
     };
-    await load(c, extraction, dp, run.result);
+    try {
+      await load(c, extraction, dp, run.result);
+    } finally {
+      rec.status = run.abort.signal.aborted ? 'stopped' : 'done';
+      rec.finishedAt = new Date().toISOString();
+      if (rec.created.length) persistRun(rec);
+      else forgetRecords([rec.id], []);
+    }
     const r = run.result;
     log(r.failures.length ? 'warn' : 'success', `Run finished: ${fmtNum(r.created.length)} inserted, ${fmtNum(r.failures.filter((f) => f.stage !== 'update').length)} not inserted, ${fmtNum(r.updated)} lookups back-filled.`);
     finish('done');
@@ -233,27 +251,42 @@ export function stop() {
   }
 }
 
-/** Records available for rollback: current run, else the persisted last run for this target org. */
-export function rollbackCandidates() {
-  if (state.run && state.run.result && state.run.result.created.length) {
-    return { source: 'current', created: state.run.result.created };
+let historyWarned = false;
+/** Saves a run's record of created Ids in this browser; warns once when it cannot. */
+function persistRun(rec) {
+  const { saved, dropped } = saveRun(rec);
+  for (const d of dropped) log('warn', `Browser storage is full: forgot the run "${d.templateName}" of ${new Date(d.startedAt).toLocaleString()} (${plural(d.created.length, 'record')} in ${d.targetOrgName}). Those records can no longer be deleted from here.`);
+  if (!saved && !historyWarned) {
+    historyWarned = true;
+    log('warn', 'Could not save this run in the browser (storage full). Download the Id map now: the records can be deleted from this page only until it is closed.');
   }
-  const last = getLastRun();
-  const t = state.conn.target.org;
-  if (last && last.created && last.created.length && t && last.targetOrgId === t.Id) {
-    return {
-      source: 'stored',
-      label: `${last.planName} (${new Date(last.startedAt).toLocaleString()})`,
-      created: last.created.map((x) => ({ object: x.o, sourceId: x.s, targetId: x.t })),
-    };
-  }
-  return null;
 }
 
-export async function rollbackRun() {
+/**
+ * Runs that created records in the connected Target org: { mine, others }, newest first. "mine" are runs
+ * of the current template (same templateId). The current run is included even if it could not be saved.
+ */
+export function seededRuns() {
+  const t = state.conn.target;
+  if (t.status !== 'connected' || !t.org) return { mine: [], others: [] };
+  const res = runsInOrg(t.org.Id, state.plan.templateId);
+  const cur = state.run && state.run.historyRec;
+  if (cur && cur.created.length && cur.targetOrgId === t.org.Id && ![...res.mine, ...res.others].some((r) => r.id === cur.id)) {
+    (cur.templateId === state.plan.templateId ? res.mine : res.others).unshift(cur);
+  }
+  return res;
+}
+
+/** Deletes the records created by the given runs (newest run first, children before parents). */
+export async function deleteSeededRecords(runIds) {
   if (isBusy()) return;
-  const cand = rollbackCandidates();
-  if (!cand) return;
+  const all = [...listRuns(), ...(state.run && state.run.historyRec ? [state.run.historyRec] : [])];
+  const ids = new Set(runIds);
+  const runs = [...new Map(all.filter((r) => ids.has(r.id)).map((r) => [r.id, r])).values()]
+    .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+  // rollback() deletes in reverse order: oldest run first here means the newest run is deleted first.
+  const created = runs.flatMap((r) => r.created.map((x) => ({ object: x.o, sourceId: x.s, targetId: x.t })));
+  if (!created.length) return;
   const prev = state.run;
   state.run = freshRun('rollback');
   if (prev) {
@@ -263,22 +296,38 @@ export async function rollbackRun() {
     state.run.result = prev.result;
     state.run.counts = prev.counts;
   }
-  setLabel('Rolling back');
-  log('info', `Deleting ${plural(cand.created.length, 'record')} created by the last run…`);
+  setLabel('Deleting seeded records');
+  log('info', `Deleting ${plural(created.length, 'record')} created by ${plural(runs.length, 'earlier run')}…`);
   try {
-    const res = await rollback(state.conn.target.client, cand.created, { log, progress, signal: state.run.abort.signal });
+    const res = await rollback(state.conn.target.client, created, { log, progress, signal: state.run.abort.signal });
     state.run.rollbackResult = res;
     for (const f of res.failures.slice(0, 50)) log('error', `Could not delete ${f.id}: ${f.message}`);
-    if (!res.failures.length) {
-      clearLastRun();
-      if (state.run.result) state.run.result.created = [];
-    }
+    const failed = new Set(res.failures.map((f) => f.id));
+    const deleted = created.map((x) => x.targetId).filter((id) => !failed.has(id));
+    forgetRecords(runs.map((r) => r.id), deleted);
+    for (const r of runs) if (r === (prev && prev.historyRec)) r.created = r.created.filter((x) => failed.has(x.t));
+    if (state.run.result) state.run.result.created = state.run.result.created.filter((x) => failed.has(x.targetId));
     finish('done');
   } catch (e) {
     handleFailure(e);
   } finally {
     refreshLimits('target');
   }
+}
+
+/**
+ * Read-only extraction of the whole plan from the Source org to count the records each step would take.
+ * Stored in state.recordCounts with the plan signature, so the counts show as out of date after edits.
+ */
+export async function countRecords({ signal } = {}) {
+  const s = state.conn.source;
+  if (s.status !== 'connected') throw new Error('Connect the Source org to count records.');
+  const c = { ...ctx(signal || new AbortController().signal, { live: true }), log: () => {}, progress: () => {} };
+  c.target = null;
+  const ex = await extract(c);
+  state.recordCounts = { signature: dataSignature(state.plan), at: new Date().toISOString(), stats: ex.stats, total: ex.total };
+  emit('plan');
+  return state.recordCounts;
 }
 
 // ---------- Downloads ----------

@@ -25,7 +25,6 @@ function buildClient(role, session) {
     instanceUrl: session.instanceUrl,
     accessToken: session.accessToken,
     apiVersion: session.apiVersion || FALLBACK_API_VERSION,
-    transport: state.settings.transport,
     label: role,
     onUnauthorized: () => markExpired(role),
   });
@@ -129,14 +128,6 @@ export async function restoreConnections() {
     const session = getSession(role);
     if (session) await introspect(role, session);
   }));
-}
-
-/** Rebuild clients after a transport change. */
-export function rebuildClients() {
-  for (const role of ROLES) {
-    const c = state.conn[role];
-    if (c.session) introspect(role, c.session);
-  }
 }
 
 export async function refreshLimits(role) {

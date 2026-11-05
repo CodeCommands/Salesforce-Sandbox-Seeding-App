@@ -369,7 +369,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 15
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .settings-grid fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin: 0; display: flex; flex-direction: column; gap: 12px; }
-.settings-grid fieldset:first-child { grid-row: span 2; }
+.settings-intro { margin: 0; }
 .settings-grid legend { font-weight: 650; padding: 0 4px; }
 .span-all { grid-column: 1 / -1; }
 .guide h3 { margin: 14px 0 4px; }
@@ -486,3 +486,19 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 15
 /* ----- Connect: consumer key ----- */
 .key-block { display: flex; flex-direction: column; gap: 6px; }
 .guide-btn { align-self: flex-start; }
+
+/* Seeded records (run history) */
+.seeded-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 4px; }
+.seeded-head h4 { margin: 0; font-size: 0.95rem; }
+.seeded-list { list-style: none; margin: 0; padding: 0; }
+.seeded-run { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); }
+.seeded-run-text { min-width: 0; }
+.seeded-run .btn { flex-shrink: 0; }
+.seeded-card details.advanced { margin-top: 12px; }
+
+/* Record count card in the step editor */
+.count-rows { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; align-items: baseline; }
+.count-rows dt { font-weight: 600; }
+.count-rows dd { margin: 0; }
+.count-big { font-size: 1.15rem; font-weight: 650; }
+.template-id-row { padding: 8px 0 4px; overflow-wrap: anywhere; }

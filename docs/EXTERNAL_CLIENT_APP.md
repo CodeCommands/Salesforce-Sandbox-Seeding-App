@@ -39,16 +39,13 @@ A **Local** External Client App signs users in only to the org where it exists.
 
 The app remembers a per-org key in this browser, keyed by Source/Target.
 
-## 3. Transport and CORS
+## 3. No CORS setup needed
 
-| Transport | What to configure in each org |
-| --- | --- |
-| **Local proxy** (default) | Nothing. The browser talks only to the local server (`server.ps1` on Windows, `server.pl` on macOS), which relays calls (including the token exchange) to Salesforce. The start script window must stay open. |
-| Direct | Setup → CORS → Allowed Origins List → New: `http://localhost:5050`, and tick **Enable CORS for OAuth endpoints**. Sandboxes copy this list from production on refresh. |
+The browser talks only to the local server that the start script runs (`server.ps1` on Windows, `server.pl` on macOS). That server passes every call, including the token exchange, to Salesforce, so the orgs need no CORS entries. The start script window must stay open.
 
 ## 4. Configure the app
 
-Paste the Consumer Key into the **Consumer Key** box on the org's card on the **Connect** tab (the first key you enter is also used for the other org), or into **Settings** (⚙). Both are stored in this browser only. To set it for everyone who uses this copy, put it in `public/config.json`:
+Paste the Consumer Key into the **Consumer Key** box on the org's card on the **Connect** tab (the first key you enter is also used for the other org), or into **Settings** (⚙), where it is the shared key for both orgs. Both are stored in this browser only. To set it for everyone who uses this copy, put it in `public/config.json`:
 
 ```json
 { "clientId": "3MVG9...your consumer key..." }
@@ -72,4 +69,4 @@ Paste the Consumer Key into the **Consumer Key** box on the org's card on the **
 | `invalid_grant` | Untick *Require secret for Web Server Flow*. Also check that the code wasn't reused (start the login again). |
 | `invalid_request` mentioning code challenge | Enable *Require Proof Key for Code Exchange (PKCE)*. |
 | `OAUTH_APPROVAL_ERROR_GENERIC` / user not approved | Check *Permitted Users* and the assigned profiles / permission sets. |
-| "Token exchange failed" | Proxy: make sure `start.bat` / `start.command` is running. Direct: enable *Enable CORS for OAuth endpoints*. |
+| "Token exchange failed" | Make sure `start.bat` / `start.command` is still running. |

@@ -3,7 +3,7 @@
 // Login runs in a popup so the SPA keeps its state; a full-page redirect is the fallback.
 import { storage } from './util.js';
 import { redirectUri } from './config.js';
-import { transportFetch } from './sfapi.js';
+import { proxyFetch } from './sfapi.js';
 
 export const ROLES = ['source', 'target'];
 const PENDING_KEY = 'sfseed.oauth.pending';
@@ -200,16 +200,14 @@ async function exchangeCode(pending, code, settings) {
   });
   let res;
   try {
-    res = await transportFetch(settings.transport, `${pending.loginHost}/services/oauth2/token`, {
+    res = await proxyFetch(`${pending.loginHost}/services/oauth2/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       body: body.toString(),
       credentials: 'omit',
     });
   } catch (e) {
-    throw new Error(settings.transport === 'proxy'
-      ? `Token exchange failed (${e.message}). Check that the start script (start.bat or start.command) is still running.`
-      : `Token exchange failed (${e.message}). With Direct transport, enable "Enable CORS for OAuth endpoints" in Setup > CORS, or switch Transport to "Local proxy".`);
+    throw new Error(`Token exchange failed (${e.message}). Check that the start script (start.bat or start.command) is still running.`);
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(explainOAuthError(data.error || `HTTP ${res.status}`, data.error_description));

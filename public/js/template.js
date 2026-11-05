@@ -1,11 +1,12 @@
 // Seeding template: the portable JSON document describing a plan. See docs/TEMPLATE_SCHEMA.md.
-import { uid, downloadText, slugify } from './util.js';
+import { uid, uuid, downloadText, slugify } from './util.js';
 import { OPERATORS } from './soql.js';
 
 export const TEMPLATE_FORMAT = 'sf-sandbox-seeding-template';
 export const SCHEMA_VERSION = 2; // 1 = plan only; 2 adds the optional "data" block (captured records)
 export const DATA_FORMAT = 'records-v1';
 const ID_RE = /^[a-zA-Z0-9]{15,18}$/;
+export const TEMPLATE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const DEFAULT_PLAN_SETTINGS = Object.freeze({
   matchUsersByUsername: true, // User lookups (OwnerId…) are mapped to the target user with the same Username (sandbox suffixes handled)
@@ -18,6 +19,9 @@ export const DEFAULT_PLAN_SETTINGS = Object.freeze({
 export function newPlan(name = 'Untitled seeding plan') {
   const now = new Date().toISOString();
   return {
+    // Permanent identity of the template: kept through edits, export and import, so runs of the same
+    // template can be found again (run history). Only "Make a separate copy" or New issues a new one.
+    templateId: uuid(),
     name,
     description: '',
     createdAt: now,
@@ -69,6 +73,7 @@ export function toTemplate(plan, { snapshot = null } = {}) {
   const doc = {
     format: TEMPLATE_FORMAT,
     schemaVersion: snapshot ? 2 : 1,
+    templateId: plan.templateId,
     name: plan.name,
     description: plan.description || '',
     createdAt: plan.createdAt,
@@ -110,17 +115,63 @@ export function exportTemplate(plan, { snapshot = null } = {}) {
 
 function serializeData(snap, plan) {
   const steps = {};
-  for (const s of plan.steps) if (snap.steps[s.id]) steps[s.id] = snap.steps[s.id];
+  for (const s of plan.steps) {
+    if (snap.steps[s.id]) steps[s.id] = { records: snap.steps[s.id].records.map(stripEmpty) };
+  }
+  const objects = {};
+  for (const [name, d] of Object.entries(snap.objects)) {
+    const keep = keptFieldNames(plan, steps, name);
+    const nameField = (d.fields.find((f) => f.nameField) || {}).name;
+    objects[name] = { ...d, fields: d.fields.filter((f) => f.name === 'Id' || f.name === nameField || keep.has(f.name)).map(compactField) };
+  }
   return {
     format: DATA_FORMAT,
     capturedAt: snap.capturedAt,
     source: snap.source,
     total: Object.values(steps).reduce((n, x) => n + x.records.length, 0),
     keyPrefixes: snap.keyPrefixes,
-    objects: snap.objects,
+    objects,
     users: snap.users,
     steps,
   };
+}
+
+/** Drops REST "attributes" blocks and empty values (blank fields are never inserted), at any depth. */
+export function stripEmpty(r) {
+  const out = {};
+  for (const [k, v] of Object.entries(r)) {
+    if (k === 'attributes' || v === null || v === undefined) continue;
+    out[k] = v && typeof v === 'object' && !Array.isArray(v) ? stripEmpty(v) : v;
+  }
+  return out;
+}
+
+/**
+ * Fields of `object` that captured data has to describe: those the captured records carry a value for,
+ * plus fields a step names explicitly (chosen fields, scope lookups). Other fields are never inserted.
+ */
+export function keptFieldNames(plan, capturedSteps, object) {
+  const keep = new Set(['Id']);
+  for (const s of plan.steps) {
+    if (s.object.toLowerCase() !== object.toLowerCase()) continue;
+    if (s.fieldMode === 'selected') for (const f of s.fields || []) keep.add(f);
+    for (const sc of s.parentScopes || []) keep.add(sc.field);
+    const data = capturedSteps[s.id];
+    for (const r of data ? data.records : []) for (const k of Object.keys(r)) keep.add(k);
+  }
+  return keep;
+}
+
+/** Leaves out values parseData() restores by default (most flags are false, nillable is true), which halves the field list. */
+function compactField(f) {
+  const out = { name: f.name };
+  if (f.label && f.label !== f.name) out.label = f.label;
+  out.type = f.type;
+  if (f.referenceTo && f.referenceTo.length) out.referenceTo = f.referenceTo;
+  if (f.relationshipName) out.relationshipName = f.relationshipName;
+  if (f.nillable === false) out.nillable = false;
+  for (const k of ['createable', 'updateable', 'defaultedOnCreate', 'nameField', 'filterable', 'sortable']) if (f[k]) out[k] = true;
+  return out;
 }
 
 const str = (v, max = 255) => (typeof v === 'string' ? v.slice(0, max) : '');
@@ -170,7 +221,7 @@ export function parseData(data, idRemap) {
     const id = idRemap.get(oldId);
     if (!id || !isObj(entry) || !Array.isArray(entry.records)) continue;
     const records = entry.records.filter((r) => isObj(r) && typeof r.Id === 'string' && ID_RE.test(r.Id));
-    steps[id] = { records, stats: isObj(entry.stats) ? entry.stats : {} };
+    steps[id] = { records };
     total += records.length;
   }
   const src = isObj(data.source) ? data.source : {};
@@ -243,6 +294,7 @@ export function parseTemplate(text, { keepIds = false } = {}) {
   const warnings = [];
   const plan = newPlan(typeof doc.name === 'string' && doc.name.trim() ? doc.name.trim() : 'Imported plan');
   plan.description = typeof doc.description === 'string' ? doc.description : '';
+  if (typeof doc.templateId === 'string' && TEMPLATE_ID_RE.test(doc.templateId)) plan.templateId = doc.templateId.toLowerCase();
   if (doc.createdAt) plan.createdAt = String(doc.createdAt);
 
   const s = isObj(doc.settings) ? doc.settings : {};

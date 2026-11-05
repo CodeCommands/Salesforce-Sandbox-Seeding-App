@@ -4,7 +4,6 @@ import { newPlan, toTemplate, draftFromStorage } from './template.js';
 import { dataSignature } from './snapshot.js';
 
 const DRAFT_KEY = 'sfseed.draft';
-const LAST_RUN_KEY = 'sfseed.lastRun';
 const SNAPSHOT_KEY = 'sfseed.snapshot';
 
 function emptyConnection() {
@@ -20,6 +19,7 @@ export const state = {
   run: null, // see runController.js
   snapshot: null, // captured record data (see snapshot.js); kept in memory and in this tab's sessionStorage
   useSnapshot: true, // when both captured data and a Source connection exist, which one runs use
+  recordCounts: null, // { signature, at, stats: Map(stepId -> extraction stats), total } from "Count records"
 };
 
 export { emptyConnection };
@@ -107,20 +107,4 @@ export function runsFromSnapshot() {
 
 export function selectedStep() {
   return state.plan.steps.find((s) => s.id === state.selectedStepId) || null;
-}
-
-// ---------- Last run (Ids only) so a run can be rolled back after a page reload ----------
-
-export function getLastRun() {
-  return storage.get('localStorage', LAST_RUN_KEY);
-}
-
-export function saveLastRun(run) {
-  if (!storage.set('localStorage', LAST_RUN_KEY, run)) {
-    console.warn('Could not persist last run (storage full?)');
-  }
-}
-
-export function clearLastRun() {
-  storage.remove('localStorage', LAST_RUN_KEY);
 }
