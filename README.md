@@ -123,7 +123,8 @@ Every run saves the Ids of the records it created in this browser, linked to the
    * parent already inserted → replaced with the Target Id;
    * parent in this seed but inserted later → left blank now, set by a **back-fill update** at the end;
    * a User → the active Target user with the same Username (base username plus the Target sandbox suffix, then exact). If none exists, it's left blank;
-   * parent not in the seed → left blank. If the lookup is **required**, the record is skipped and reported. Objects listed in *Keep Ids as-is* keep the original Id.
+   * a lookup that can only point to **setup data each org keeps itself** (Business Hours, queues' groups, email templates, profiles…) → not sent at all, so the Target org fills it in. For example `Case.BusinessHoursId` gets the Target org's default Business Hours. Validation lists these fields as a note, and the Fields section marks them *set by Target org*;
+   * parent not in the seed → left blank. If the lookup is **required**, the record is skipped and reported. Objects listed in *Keep Ids as-is* keep the original Id (this also turns the setup-data rule off for that object, for orgs that share those Ids, such as a sandbox and its production org).
 3. `RecordTypeId` is replaced with the Target Record Type that has the same namespace + `DeveloperName`.
 4. Self-references (Account hierarchies, Contact `ReportsTo`) are inserted top-level first, then one level per pass.
 

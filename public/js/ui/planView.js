@@ -5,7 +5,7 @@ import { newFilter, DEFAULT_PLAN_SETTINGS, effectiveRecordSource, addLink, remov
 import {
   OPERATORS, operatorsFor, compileQuery, splitList, RECORD_TYPE_FIELD,
 } from '../soql.js';
-import { getField, isLookup, isRequiredOnCreate, seedableFields, qualifyRt, selectedSourceFields } from '../schema.js';
+import { getField, isLookup, isOrgSetupLookup, isRequiredOnCreate, seedableFields, qualifyRt, selectedSourceFields } from '../schema.js';
 import { dependencyEdges, suggestOrder, checkOrder, findLoop, wouldLoop } from '../planner.js';
 import { SnapshotSource, snapshotSummary, snapshotRecordCount, dataSignature } from '../snapshot.js';
 import { countRecords, isBusy } from '../runController.js';
@@ -746,14 +746,19 @@ function fieldsSection(step, describe) {
   const updateCounter = () => { counter.textContent = mode === 'selected' ? `${step.fields.length} of ${all.length} selected` : ''; };
   updateCounter();
 
+  const orgSet = all.filter((f) => isOrgSetupLookup(f) && !f.referenceTo.some((r) => preserve.has(r.toLowerCase())));
+  const orgSetNote = orgSet.length ? h('p', { class: 'muted small' }, `Filled in by the Target org, not copied: ${orgSet.map((f) => `${f.name} (→ ${f.referenceTo.join('/')})`).join(', ')}. Each org has its own ${[...new Set(orgSet.flatMap((f) => f.referenceTo))].join(', ')}.`) : null;
   if (mode === 'all') {
     return h('div', null, ...section('Fields', 'Only fields that can be set on insert are listed. Formula, system and audit fields are never copied.', modeRow,
-      h('p', { class: 'muted small' }, 'Every createable field is copied. Fields missing in the Target org are skipped automatically (shown during validation).')));
+      h('p', { class: 'muted small' }, 'Every createable field is copied. Fields missing in the Target org are skipped automatically (shown during validation).'), orgSetNote));
   }
 
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter fields…', 'aria-label': 'Filter fields' });
   const items = all.map((f) => {
     const lookupNote = isLookup(f) ? (() => {
+      if (isOrgSetupLookup(f) && !f.referenceTo.some((r) => preserve.has(r.toLowerCase()))) {
+        return badge(`→ ${f.referenceTo.join('/')} · set by Target org`, 'neutral', `${f.referenceTo.join('/')} is set up separately in each org, so this field is not copied; the Target org fills it in`);
+      }
       const inPlan = f.referenceTo.some((r) => planObjects.has(r.toLowerCase()));
       const kept = f.referenceTo.some((r) => preserve.has(r.toLowerCase()));
       const users = f.referenceTo.includes('User') && state.plan.settings.matchUsersByUsername !== false;

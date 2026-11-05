@@ -58,6 +58,17 @@ export const NON_COPYABLE_REFERENCES = new Set([
   'queue', 'calendar', 'process', 'flow', 'apexclass', 'staticresource', 'brandtemplate',
 ]);
 
+/**
+ * A lookup that can only point to setup data each org keeps for itself (Business Hours, queues, email
+ * templates…), never to User (users are matched by Username) or to records this tool copies. Such
+ * fields are not sent on insert: the Target org fills them in (e.g. Case.BusinessHoursId gets the
+ * default Business Hours), unless the template keeps those Ids as-is.
+ */
+export function isOrgSetupLookup(f) {
+  return isLookup(f) && f.referenceTo.every((r) => NON_COPYABLE_REFERENCES.has(r.toLowerCase()))
+    && !f.referenceTo.some((r) => r.toLowerCase() === 'user');
+}
+
 export function isCopyableReference(objectName, globalSobjects) {
   if (!objectName || NON_COPYABLE_REFERENCES.has(objectName.toLowerCase())) return false;
   const g = (globalSobjects || []).find((x) => x.name.toLowerCase() === objectName.toLowerCase());

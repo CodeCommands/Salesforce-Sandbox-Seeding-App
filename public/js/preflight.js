@@ -1,7 +1,7 @@
 // Pre-flight validation. Static checks run before extraction; data checks run on extracted records
 // and are what decide whether any insert is attempted.
 import {
-  fieldMap, getField, hasRecordTypes, isLookup, isRequiredOnCreate, qualifyRt, selectedSourceFields, isSeedableField,
+  fieldMap, getField, hasRecordTypes, isLookup, isOrgSetupLookup, isRequiredOnCreate, qualifyRt, selectedSourceFields, isSeedableField,
 } from './schema.js';
 import { compileQuery, compileCountQuery, clampLimit } from './soql.js';
 import { dependencyEdges, checkOrder, findLoop, describeLink } from './planner.js';
@@ -31,18 +31,25 @@ export function activeSteps(plan) {
 }
 
 /** Maps each step's chosen source fields onto the target describe. */
-export function buildFieldPlan(step, sourceDescribe, targetDescribe) {
+export function buildFieldPlan(step, sourceDescribe, targetDescribe, { preserve = new Set() } = {}) {
   const tmap = fieldMap(targetDescribe);
   const insertFields = [];
   const dropped = [];
+  const orgDefaulted = []; // lookups to org setup data (Business Hours…): left for the Target org to fill in
   for (const f of selectedSourceFields(step, sourceDescribe)) {
+    if (isOrgSetupLookup(f) && !f.referenceTo.some((r) => preserve.has(r.toLowerCase()))) {
+      orgDefaulted.push({ name: f.name, referenceTo: f.referenceTo });
+      continue;
+    }
     const t = tmap.get(f.name.toLowerCase());
     if (!t) dropped.push({ name: f.name, reason: 'does not exist in target (or no field-level access)' });
     else if (!isSeedableField(t)) dropped.push({ name: f.name, reason: 'is not createable in target' });
     else insertFields.push({ name: t.name, src: f, tgt: t });
   }
-  return { insertFields, dropped, targetHasRecordTypes: hasRecordTypes(targetDescribe) };
+  return { insertFields, dropped, orgDefaulted, targetHasRecordTypes: hasRecordTypes(targetDescribe) };
 }
+
+const preserveSet = (plan) => new Set(((plan.settings && plan.settings.preserveLookupsTo) || []).map((o) => o.toLowerCase()));
 
 async function safeDescribe(client, name) {
   try {
@@ -142,12 +149,16 @@ export async function staticPreflight(ctx, { withCounts = true } = {}) {
     }
 
     if (tDesc) {
-      const fp = buildFieldPlan(step, sDesc, tDesc);
+      const fp = buildFieldPlan(step, sDesc, tDesc, { preserve: preserveSet(plan) });
+      if (fp.orgDefaulted.length) {
+        const refs = [...new Set(fp.orgDefaulted.flatMap((f) => f.referenceTo))];
+        report.info(`${step.object}: ${fp.orgDefaulted.map((f) => f.name).join(', ')} ${fp.orgDefaulted.length === 1 ? 'is' : 'are'} not copied. ${refs.join(', ')} ${refs.length === 1 ? 'is' : 'are'} set up separately in each org, so the Target org fills ${fp.orgDefaulted.length === 1 ? 'it' : 'them'} in${refs.includes('BusinessHours') ? ' (Business Hours: the Target org\'s default Business Hours)' : ''}. To copy the Ids as-is (only when both orgs share them, such as a sandbox and its production org), add ${refs.join(', ')} under Template settings > Keep Ids as-is.`, step.id);
+      }
       if (!fp.insertFields.length) report.error(`${step.object}: none of the selected fields can be inserted in the Target org.`, step.id);
       if (fp.dropped.length) {
         report.warn(`${step.object}: ${plural(fp.dropped.length, 'field')} will be skipped: ${fp.dropped.map((d) => `${d.name} (${d.reason})`).join('; ')}.`, step.id);
       }
-      const seeded = new Set(fp.insertFields.map((f) => f.name.toLowerCase()));
+      const seeded = new Set([...fp.insertFields, ...fp.orgDefaulted].map((f) => f.name.toLowerCase()));
       const missingRequired = tDesc.fields.filter((f) => isRequiredOnCreate(f) && !seeded.has(f.name.toLowerCase()) && f.name !== 'RecordTypeId');
       if (missingRequired.length) {
         report.warn(`${step.object}: Target requires ${missingRequired.map((f) => f.name).join(', ')}, which ${missingRequired.length === 1 ? 'is' : 'are'} not being copied. Inserts will fail unless a default or automation fills ${missingRequired.length === 1 ? 'it' : 'them'}.`, step.id);
@@ -275,7 +286,7 @@ export async function dataPreflight(ctx, extraction) {
     const records = extraction.byStep.get(step.id) || [];
     const sDesc = await source.describe(step.object);
     const tDesc = await target.describe(step.object);
-    const fp = buildFieldPlan(step, sDesc, tDesc);
+    const fp = buildFieldPlan(step, sDesc, tDesc, { preserve });
     fieldPlans.set(step.id, fp);
     if (!records.length) continue;
 
