@@ -5,7 +5,7 @@ import { state, snapshotState, emit } from '../store.js';
 import { snapshotSummary } from '../snapshot.js';
 import { ENVIRONMENTS } from '../auth.js';
 import { connect, disconnect, cancelConnect } from '../connections.js';
-import { listSavedOrgs, getSavedOrg, lastUsed, forgetOrg, legacyPrefill } from '../savedOrgs.js';
+import { listSavedOrgs, getSavedOrg, lastUsed, forgetOrg, legacyPrefill, savedOrgsLocation } from '../savedOrgs.js';
 import { badge, toast, formRow, select, confirmModal } from './components.js';
 import { openSetupGuide } from './setupGuide.js';
 
@@ -38,11 +38,14 @@ export function renderConnectView(container) {
       h('p', { class: 'muted' }, 'Sign in to both orgs with OAuth. Access tokens stay in this browser tab (sessionStorage) and are never written to disk.')),
     firstTime ? h('div', { class: 'callout callout-warning' },
       h('strong', null, 'First time here? '),
-      'Each org needs the Consumer Key of its External Client App: paste it on the org card and connect. The org is then saved, so next time you only pick it and sign in. Use the setup guide button on the card if the app does not exist yet.') : null,
+      'Each org needs the Consumer Key of its External Client App: paste it on the org card and connect. The org is then saved in the app folder, so next time you only pick it and sign in. Use the setup guide button on the card if the app does not exist yet.') : null,
     whichOrgsNote(),
     h('div', { class: 'org-grid' }, orgCard('source'), h('div', { class: 'org-arrow', 'aria-hidden': 'true' }, '→'), orgCard('target')),
     h('p', { class: 'muted small' },
-      'Sign-in: OAuth 2.0 + PKCE · API version: newest per org · Saved orgs keep only the My Domain and Consumer Key in this browser, never passwords or tokens.')));
+      'Sign-in: OAuth 2.0 + PKCE · API version: newest per org · ',
+      savedOrgsLocation() === 'file'
+        ? ['Saved orgs are kept in ', h('code', null, 'data/saved-orgs.json'), ' in the app folder (My Domain and Consumer Key only, never passwords or tokens).']
+        : h('span', { class: 'warning-text' }, 'Saved orgs are kept in this browser only, because the running start script cannot save files. Restart the app with the latest start.bat / start.command to keep them in the app folder.'))));
 }
 
 /** Which connections the current plan needs. */
@@ -169,7 +172,7 @@ function orgCard(role) {
   syncBtn();
   const keyHint = pick
     ? 'Saved for this org. After a sandbox refresh the key can change: if sign-in fails, paste the new key from the org\'s External Client App. It is saved once you are connected.'
-    : 'From the org\'s External Client App: Settings > OAuth Settings > Consumer Key and Secret. No secret is needed. Saved with the org once you are connected.';
+    : 'From the org\'s External Client App: Settings > OAuth Settings > Consumer Key and Secret. No secret is needed. Saved with the org (in the app folder) once you are connected.';
   if (conn.error) card.appendChild(h('div', { class: 'callout callout-danger small', role: 'alert' }, conn.error));
   card.appendChild(h('div', { class: 'form-stack' }, ...rows,
     h('div', { class: 'key-block' },

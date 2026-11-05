@@ -6,12 +6,15 @@
     Serves the ./public folder on http://localhost:<Port>/ using System.Net.HttpListener so the
     browser app runs from a real http origin (OAuth callbacks and CORS do not work from file:///).
 
-    Optional relay: POST/GET/PATCH/DELETE /api/proxy forwards a request to the Salesforce URL in the
+    Relay: POST/GET/PATCH/DELETE /api/proxy forwards a request to the Salesforce URL in the
     X-SF-Endpoint header. Only https Salesforce hosts are allowed and only same-origin browser calls
-    are accepted. Used when the app's Transport setting is "Local proxy".
+    are accepted. Every Salesforce call of the app goes through it.
+
+    Data: GET/PUT /api/data/saved-orgs reads/writes data\saved-orgs.json next to this script (the
+    orgs connected before: My Domain + Consumer Key, never tokens), so they survive browser clean-ups.
 
 .PARAMETER Port
-    TCP port to listen on (default 5050). The Connected App callback URL must use the same port.
+    TCP port to listen on (default 5050). The External Client App callback URL must use the same port.
 
 .PARAMETER Root
     Folder to serve (default: the "public" folder next to this script).
@@ -40,15 +43,16 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
     Write-Host ''
     Write-Host ("  PowerShell is running in {0} mode (AppLocker / WDAC policy)." -f $ExecutionContext.SessionState.LanguageMode) -ForegroundColor Red
     Write-Host '  The local server needs FullLanguage mode to use .NET HttpListener.' -ForegroundColor Red
-    Write-Host '  Ask IT to allow server.ps1, or host the "public" folder on any internal web server.' -ForegroundColor Red
+    Write-Host '  Ask IT to allow server.ps1; the app needs it to reach Salesforce.' -ForegroundColor Red
     exit 2
 }
 
-if (-not $Root) {
-    $base = $PSScriptRoot
-    if (-not $base) { $base = (Get-Location).Path }
-    $Root = Join-Path $base 'public'
-}
+$AppDir = $PSScriptRoot
+if (-not $AppDir) { $AppDir = (Get-Location).Path }
+if (-not $Root) { $Root = Join-Path $AppDir 'public' }
+$DataDir = Join-Path $AppDir 'data'
+$DataNames = @('saved-orgs')   # files the app may read and write in data\
+$MaxDataBytes = 1048576
 $Root = [System.IO.Path]::GetFullPath($Root)
 if (-not (Test-Path -LiteralPath (Join-Path $Root 'index.html'))) {
     Write-Host "  Cannot find index.html in $Root" -ForegroundColor Red
@@ -238,6 +242,77 @@ function Invoke-SalesforceProxy {
     }
 }
 
+# --- App data (data\<name>.json) ----------------------------------------------------------------
+
+function Invoke-DataStore {
+    param($Context, [string]$Name)
+    $req = $Context.Request
+    # Same rules as the relay: only this app's own pages (HttpListener already only answers localhost:<Port>).
+    $reqOrigin = $req.Headers['Origin']
+    $fetchSite = $req.Headers['Sec-Fetch-Site']
+    if (($reqOrigin -and $reqOrigin -ne $AppOrigin) -or ($fetchSite -and $fetchSite -ne 'same-origin')) {
+        Send-Json -Context $Context -Status 403 -Object @{ proxyError = 'Cross-origin requests are not allowed' }
+        return
+    }
+    if ($DataNames -notcontains $Name) {
+        Send-Json -Context $Context -Status 404 -Object @{ proxyError = 'Unknown data file' }
+        return
+    }
+    $file = Join-Path $DataDir ($Name + '.json')
+    if ($req.HttpMethod -eq 'GET' -or $req.HttpMethod -eq 'HEAD') {
+        if ([System.IO.File]::Exists($file)) {
+            Send-Bytes -Context $Context -Status 200 -ContentType 'application/json; charset=utf-8' -Bytes ([System.IO.File]::ReadAllBytes($file))
+        } else {
+            Send-Text -Context $Context -Status 200 -Text 'null' -ContentType 'application/json; charset=utf-8'
+        }
+        return
+    }
+    if ($req.HttpMethod -ne 'PUT') {
+        Send-Json -Context $Context -Status 405 -Object @{ proxyError = 'Method not allowed' }
+        return
+    }
+    # A custom header makes browsers send a CORS preflight for cross-site writes, which this server never allows.
+    if ($req.Headers['X-Seeder-Request'] -ne '1') {
+        Send-Json -Context $Context -Status 403 -Object @{ proxyError = 'Missing X-Seeder-Request header' }
+        return
+    }
+    if ($req.ContentLength64 -gt $MaxDataBytes) {
+        Send-Json -Context $Context -Status 413 -Object @{ proxyError = 'Data too large' }
+        return
+    }
+    $buffer = New-Object System.IO.MemoryStream
+    $req.InputStream.CopyTo($buffer)
+    $bytes = $buffer.ToArray()
+    if ($bytes.Length -gt $MaxDataBytes) {
+        Send-Json -Context $Context -Status 413 -Object @{ proxyError = 'Data too large' }
+        return
+    }
+    $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    $valid = $false
+    if ($text.TrimStart().StartsWith('{')) {
+        try { $null = ConvertFrom-Json -InputObject $text; $valid = $true } catch { $valid = $false }
+    }
+    if (-not $valid) {
+        Send-Json -Context $Context -Status 400 -Object @{ proxyError = 'Body must be a JSON object' }
+        return
+    }
+    if (-not [System.IO.Directory]::Exists($DataDir)) { $null = [System.IO.Directory]::CreateDirectory($DataDir) }
+    # Write a temp file next to the target, then swap it in: a crash never leaves a half-written file.
+    $tmp = Join-Path $DataDir ('{0}.{1}.tmp' -f $Name, [System.Guid]::NewGuid().ToString('N'))
+    try {
+        [System.IO.File]::WriteAllBytes($tmp, $bytes)
+        if ([System.IO.File]::Exists($file)) {
+            # [NullString]::Value: a plain $null would be passed to .NET as "" (an invalid backup path).
+            try { [System.IO.File]::Replace($tmp, $file, [NullString]::Value) } catch { [System.IO.File]::Copy($tmp, $file, $true) }
+        } else {
+            [System.IO.File]::Move($tmp, $file)
+        }
+    } finally {
+        if ([System.IO.File]::Exists($tmp)) { try { [System.IO.File]::Delete($tmp) } catch { } }
+    }
+    Send-Json -Context $Context -Status 200 -Object @{ ok = $true }
+}
+
 # --- Request dispatch ---------------------------------------------------------------------------
 
 function Invoke-Request {
@@ -255,8 +330,10 @@ function Invoke-Request {
                 if ($ep) { try { $u = [System.Uri]$ep; $detail = ' -> ' + $u.Host + $u.AbsolutePath } catch { } }
                 Invoke-SalesforceProxy -Context $Context
             }
+        } elseif ($path -match '^/api/data/([a-z-]+)$') {
+            Invoke-DataStore -Context $Context -Name $Matches[1]
         } elseif ($path -eq '/api/health') {
-            Send-Json -Context $Context -Status 200 -Object @{ ok = $true; proxy = (-not $NoProxy); port = $Port }
+            Send-Json -Context $Context -Status 200 -Object @{ ok = $true; proxy = (-not $NoProxy); port = $Port; data = $true }
         } else {
             Send-StaticFile -Context $Context
         }
@@ -285,7 +362,7 @@ try {
     Write-Host ("  Could not listen on {0} : {1}" -f $AppUrl, $_.Exception.Message) -ForegroundColor Red
     Write-Host '  Another program may already use this port (is the Seeder already running?).' -ForegroundColor Red
     Write-Host '  To use a different port run:  start.bat 5051' -ForegroundColor Red
-    Write-Host '  (and add http://localhost:5051/oauth/callback.html to the Connected App callback URLs).' -ForegroundColor Red
+    Write-Host '  (and add http://localhost:5051/oauth/callback.html to the External Client App callback URLs).' -ForegroundColor Red
     exit 1
 }
 
@@ -296,6 +373,7 @@ Write-Host ('   App:           {0}' -f $AppUrl) -ForegroundColor Cyan
 Write-Host ('   OAuth callback: {0}oauth/callback.html' -f $AppUrl) -ForegroundColor Cyan
 Write-Host ('   CORS origin:   {0}' -f $AppOrigin) -ForegroundColor Cyan
 if ($NoProxy) { Write-Host '   Relay:         disabled' -ForegroundColor Cyan } else { Write-Host '   Relay:         enabled (/api/proxy)' -ForegroundColor Cyan }
+Write-Host ('   Saved orgs:    {0}' -f (Join-Path $DataDir 'saved-orgs.json')) -ForegroundColor Cyan
 Write-Host '   Keep this window open. Press Ctrl+C to stop.' -ForegroundColor Cyan
 Write-Host '  ==============================================================' -ForegroundColor Cyan
 Write-Host ''

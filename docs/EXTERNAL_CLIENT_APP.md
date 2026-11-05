@@ -45,7 +45,7 @@ The browser talks only to the local server that the start script runs (`server.p
 
 ## 4. Configure the app
 
-There is no settings screen. On the **Connect** tab, each org card asks for the org's login (Production, Sandbox or My Domain URL; use the My Domain URL for SSO orgs) and its **Consumer Key**. After the first successful sign-in the org is **saved in this browser**: its My Domain and Consumer Key (never passwords or tokens). Next time, pick it in the card's **Org** list and click **Connect**; the app signs in through the org's My Domain, so SSO works directly.
+There is no settings screen. On the **Connect** tab, each org card asks for the org's login (Production, Sandbox or My Domain URL; use the My Domain URL for SSO orgs) and its **Consumer Key**. After the first successful sign-in the org is **saved in the app folder** (`data/saved-orgs.json`, written by the start script's local server): its My Domain and Consumer Key (never passwords or tokens). Next time, pick it in the card's **Org** list and click **Connect**; the app signs in through the org's My Domain, so SSO works directly.
 
 After a **sandbox refresh** the My Domain stays the same but the Consumer Key can change. Pick the saved org, paste the new key into the **Consumer Key** box and connect: the saved org is updated once sign-in succeeds. **Forget this org** removes a saved org from this browser.
 

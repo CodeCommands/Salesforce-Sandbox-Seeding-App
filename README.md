@@ -18,7 +18,7 @@ A local web app for seeding Salesforce sandboxes with realistic, connected data.
 2. Start the local server. A console window opens and your browser opens `http://localhost:5050/`. Keep the window open; press `Ctrl+C` to stop.
    * **Windows:** double-click **`start.bat`**.
    * **macOS:** double-click **`start.command`**.
-3. On the **Connect** tab, paste each org's Consumer Key into the **Consumer Key** box on its card and connect. The org is saved in this browser, so next time you only pick it and sign in. Each card has an **External Client App Setup Guide** button.
+3. On the **Connect** tab, paste each org's Consumer Key into the **Consumer Key** box on its card and connect. The org is saved in the app folder (`data/saved-orgs.json`), so next time you only pick it and sign in. Each card has an **External Client App Setup Guide** button.
 4. **Connect** the Source org and the Target sandbox.
 5. **Build plan:** click **+ Add object**. The app asks how each new object's records are chosen (for example *"Contacts that belong to the Accounts in step 1"*). Then set filters and limits, and click **Find related records…** to pull in the records the lookups point to.
 6. **Validate & run:** *Validate* → *Dry run* → *Run seeding*.
@@ -53,7 +53,7 @@ Every Salesforce call, including sign-in, goes from the browser to the local ser
 There is no settings screen: everything is on the org cards.
 
 * **First time for an org:** pick *Production*, *Sandbox* or a *Custom domain* (My Domain, use it for SSO orgs), paste the org's **Consumer Key** and click **Connect**. Sign-in happens in a pop-up. If pop-ups are blocked, the app falls back to a full-page redirect, and your plan draft is kept. **External Client App Setup Guide** under the key explains how to create the app.
-* **Saved orgs:** after a successful sign-in the org is saved in this browser (My Domain and Consumer Key only, never passwords or tokens). Next time, pick it in the card's **Org** list; the key is filled in, and sign-in goes straight to the org's My Domain (and your SSO). **+ Another org…** adds a new one; **Forget this org** removes one.
+* **Saved orgs:** after a successful sign-in the org is saved in the app folder, in `data/saved-orgs.json` next to `start.bat` (My Domain and Consumer Key only, never passwords or tokens). The list survives closing the app, clearing browser data, another browser or another port. Next time, pick it in the card's **Org** list; the key is filled in, and sign-in goes straight to the org's My Domain (and your SSO). **+ Another org…** adds a new one; **Forget this org** removes one. When you install a newer version of the app, copy the `data` folder over (or unzip the new version on top of the old folder) to keep the list.
 * **After a sandbox refresh** the My Domain stays the same but the Consumer Key can change. If sign-in fails with `invalid_client_id`, paste the new key into the box and connect again; the saved org is updated.
 * Each connected card shows the API version in use. **Open org ↗** opens the org in a new tab. The browser normally still has the Salesforce session from signing in, so no extra login is needed; if it expired, you sign in as usual (with SSO, through your identity provider).
 
@@ -160,6 +160,8 @@ start.bat                 Windows entry point: launches server.ps1 (execution-po
 server.ps1                Windows: HttpListener static server + optional Salesforce relay (/api/proxy)
 start.command             macOS entry point (double-click): launches server.pl
 server.pl                 macOS: static server + Salesforce relay via the built-in curl (Perl core modules only)
+data/
+  saved-orgs.json         Saved orgs (created by the start script's server; not in Git)
 public/
   index.html              Single-page app shell
   config.json             Safety limits for every user of this copy (max records per object, warning threshold, production targets)
@@ -168,7 +170,7 @@ public/
   js/
     app.js                Bootstrap, routing, import/export
     auth.js               OAuth 2.0 Authorization Code + PKCE, session storage
-    savedOrgs.js          Saved orgs (My Domain + Consumer Key per org) for the Connect cards
+    savedOrgs.js          Saved orgs (My Domain + Consumer Key per org), stored in data/saved-orgs.json via the local server
     sfapi.js              REST client (query, describe, limits, sObject Collections)
     soql.js               Filter builder → SOQL compiler
     schema.js             Describe helpers, Record Type index

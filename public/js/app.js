@@ -9,6 +9,7 @@ import { renderConnectView } from './ui/connectView.js';
 import { renderPlanView, refreshPlanParts } from './ui/planView.js';
 import { renderRunView } from './ui/runView.js';
 import { openSetupGuide } from './ui/setupGuide.js';
+import { loadSavedOrgs } from './savedOrgs.js';
 import { openExportDialog } from './ui/exportDialog.js';
 import { toast, confirmModal, badge, openModal } from './ui/components.js';
 
@@ -182,6 +183,7 @@ async function checkProxy() {
 
 async function boot() {
   state.settings = await loadConfig();
+  await loadSavedOrgs(); // from data/saved-orgs.json in the app folder
   const repaired = restoreDraft();
   try {
     const v = sessionStorage.getItem('sfseed.view');

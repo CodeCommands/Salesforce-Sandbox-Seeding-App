@@ -3,9 +3,12 @@
 # Perl core modules and /usr/bin/curl. No installs, no admin rights.
 #
 # Serves ./public on http://localhost:<port>/ so OAuth callbacks and CORS work (they do not from
-# file:///). Optional relay: GET/POST/PATCH/DELETE /api/proxy forwards a request to the Salesforce URL
-# in the X-SF-Endpoint header via curl. Only https Salesforce hosts are allowed and only same-origin
-# browser calls are accepted. Used when the app's Transport setting is "Local proxy".
+# file:///). Relay: GET/POST/PATCH/DELETE /api/proxy forwards a request to the Salesforce URL in the
+# X-SF-Endpoint header via curl. Only https Salesforce hosts are allowed and only same-origin browser
+# calls are accepted. Every Salesforce call of the app goes through it.
+#
+# Data: GET/PUT /api/data/saved-orgs reads/writes data/saved-orgs.json next to this script (the orgs
+# connected before: My Domain + Consumer Key, never tokens), so they survive browser data clean-ups.
 #
 # Usage: perl server.pl [--port 5050] [--root DIR] [--no-browser] [--no-proxy]
 use strict;
@@ -18,6 +21,7 @@ use File::Basename qw(dirname);
 use Cwd qw(abs_path);
 use POSIX qw(strftime);
 use Getopt::Long;
+use JSON::PP ();
 
 my $port = 5050;
 my $root = '';
@@ -40,11 +44,14 @@ unless ($root && -f File::Spec->catfile($root, 'index.html')) {
 
 my $CURL = -x '/usr/bin/curl' ? '/usr/bin/curl' : (grep { -x } map { "$_/curl" } split /:/, ($ENV{PATH} // ''))[0];
 if (!$CURL && !$no_proxy) {
-  say_err('curl was not found, so the Salesforce relay is disabled. Switch Transport to "Direct" in Settings.');
+  say_err('curl was not found, so the app cannot reach Salesforce (the relay is disabled).');
   $no_proxy = 1;
 }
 
 my $APP_ORIGIN = "http://localhost:$port";
+my $DATA_DIR = File::Spec->catdir(dirname(abs_path($0)), 'data');
+my %DATA_NAMES = map { $_ => 1 } qw(saved-orgs); # files the app may read and write in data/
+my $MAX_DATA = 1024 * 1024;
 my $MAX_BODY = 100 * 1024 * 1024;
 my %MIME = (
   html => 'text/html; charset=utf-8', htm => 'text/html; charset=utf-8',
@@ -193,6 +200,46 @@ sub proxy_request {
   return send_response($c, $method, $code, $ctype || 'application/json', $out);
 }
 
+# --- App data (data/<name>.json) -------------------------------------------------------------
+
+sub send_json { my ($c, $m, $status, $json) = @_; return send_response($c, $m, $status, 'application/json; charset=utf-8', $json); }
+
+sub data_store {
+  my ($c, $method, $h, $body, $name) = @_;
+  # Same rules as the relay: only this app's own pages, addressed as localhost on this port.
+  my $origin = $h->{origin};
+  my $site = $h->{'sec-fetch-site'};
+  if ((defined $origin && $origin ne $APP_ORIGIN) || (defined $site && $site ne 'same-origin')
+      || ($h->{host} // '') !~ /^(localhost|127\.0\.0\.1|\[::1\]):\Q$port\E$/) {
+    return send_json_error($c, $method, 403, 'Cross-origin requests are not allowed');
+  }
+  return send_json_error($c, $method, 404, 'Unknown data file') unless $DATA_NAMES{$name};
+  my $file = File::Spec->catfile($DATA_DIR, "$name.json");
+  if ($method eq 'GET' || $method eq 'HEAD') {
+    return send_json($c, $method, 200, 'null') unless -f $file;
+    open(my $fh, '<:raw', $file) or return send_json_error($c, $method, 500, "Cannot read $file: $!");
+    local $/;
+    my $data = <$fh>;
+    close $fh;
+    return send_json($c, $method, 200, length $data ? $data : 'null');
+  }
+  return send_json_error($c, $method, 405, 'Method not allowed') unless $method eq 'PUT';
+  # A custom header makes browsers send a CORS preflight for cross-site writes, which this server never allows.
+  return send_json_error($c, $method, 403, 'Missing X-Seeder-Request header') unless ($h->{'x-seeder-request'} // '') eq '1';
+  return send_json_error($c, $method, 413, 'Data too large') if length($body // '') > $MAX_DATA;
+  my $doc = eval { JSON::PP->new->utf8->decode($body // '') };
+  return send_json_error($c, $method, 400, 'Body must be a JSON object') unless ref $doc eq 'HASH';
+  unless (-d $DATA_DIR) { mkdir $DATA_DIR, 0700 or return send_json_error($c, $method, 500, "Cannot create $DATA_DIR: $!"); }
+  # Write a temp file next to the target, then rename: a crash never leaves a half-written file.
+  my ($tfh, $tmp) = tempfile("$name-XXXXXX", DIR => $DATA_DIR, UNLINK => 0);
+  binmode $tfh;
+  print {$tfh} $body;
+  close $tfh or do { unlink $tmp; return send_json_error($c, $method, 500, "Cannot write $file: $!"); };
+  chmod 0600, $tmp;
+  rename($tmp, $file) or do { unlink $tmp; return send_json_error($c, $method, 500, "Cannot write $file: $!"); };
+  return send_json($c, $method, 200, '{"ok":true}');
+}
+
 # --- Request handling ------------------------------------------------------------------------
 
 sub read_request {
@@ -242,8 +289,11 @@ sub handle {
       $status = eval { proxy_request($c, $method, $req->{headers}, $req->{body}) };
       if (!defined $status) { $detail .= " ERROR: $@"; $status = send_json_error($c, $method, 500, "$@"); }
     }
+  } elsif ($path =~ m{^/api/data/([a-z-]+)$}) {
+    $status = eval { data_store($c, $method, $req->{headers}, $req->{body}, $1) };
+    if (!defined $status) { $detail .= " ERROR: $@"; $status = send_json_error($c, $method, 500, "$@"); }
   } elsif ($path eq '/api/health') {
-    $status = send_response($c, $method, 200, 'application/json; charset=utf-8', '{"ok":true,"proxy":' . ($no_proxy ? 'false' : 'true') . ",\"port\":$port}");
+    $status = send_response($c, $method, 200, 'application/json; charset=utf-8', '{"ok":true,"proxy":' . ($no_proxy ? 'false' : 'true') . ",\"port\":$port,\"data\":true}");
   } else {
     $status = serve_static($c, $method, $path);
   }
@@ -280,6 +330,7 @@ print $c36->("   App:            $APP_ORIGIN/"), "\n";
 print $c36->("   OAuth callback: $APP_ORIGIN/oauth/callback.html"), "\n";
 print $c36->("   CORS origin:    $APP_ORIGIN"), "\n";
 print $c36->('   Relay:          ' . ($no_proxy ? 'disabled' : 'enabled (/api/proxy via curl' . ($SYSTEM_PROXY ? ", system proxy $SYSTEM_PROXY" : '') . ')')), "\n";
+print $c36->("   Saved orgs:     $DATA_DIR/saved-orgs.json"), "\n";
 print $c36->('   Keep this window open. Press Ctrl+C to stop.'), "\n";
 print $c36->('  =============================================================='), "\n\n";
 

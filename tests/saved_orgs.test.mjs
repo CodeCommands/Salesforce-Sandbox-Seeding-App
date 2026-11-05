@@ -1,13 +1,18 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { listSavedOrgs, rememberOrg, forgetOrg, lastUsed, legacyPrefill, dropLegacySettings, hostOf } from '../public/js/savedOrgs.js';
+import { listSavedOrgs, rememberOrg, forgetOrg, lastUsed, legacyPrefill, dropLegacySettings, hostOf, loadSavedOrgs, savedOrgsLocation } from '../public/js/savedOrgs.js';
 import { settingsFrom, DEFAULT_SETTINGS } from '../public/js/config.js';
 
 function memoryStorage() {
   const m = new Map();
   return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) };
 }
-beforeEach(() => { globalThis.window = { localStorage: memoryStorage() }; });
+const realFetch = globalThis.fetch;
+beforeEach(async () => {
+  globalThis.window = { localStorage: memoryStorage() };
+  globalThis.fetch = async () => { throw new TypeError('no server in unit tests'); };
+  await loadSavedOrgs(); // no server: falls back to (this test's empty) browser storage
+});
 
 const UAT = 'https://Acme--UAT.sandbox.my.salesforce.com';
 
@@ -59,4 +64,53 @@ test('safety limits come from config.json only; sign-in settings there are ignor
   assert.equal(s.maxRecordsPerObject, 50000, 'clamped');
   assert.equal(s.allowProductionTarget, false, 'only a real true allows it');
   assert.deepEqual(settingsFrom({}), { ...DEFAULT_SETTINGS });
+});
+
+/** Fake local server for /api/data/saved-orgs, like server.ps1 / server.pl. */
+function fakeServer(initial = null) {
+  const srv = { file: initial === null ? null : JSON.stringify(initial), puts: 0 };
+  globalThis.fetch = async (url, init = {}) => {
+    assert.equal(url, '/api/data/saved-orgs');
+    if ((init.method || 'GET') === 'PUT') {
+      assert.equal(init.headers['X-Seeder-Request'], '1');
+      srv.file = init.body;
+      srv.puts++;
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    return { ok: true, status: 200, json: async () => JSON.parse(srv.file || 'null') };
+  };
+  return srv;
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+test('with the start script running, saved orgs go to data/saved-orgs.json, not the browser', async () => {
+  const srv = fakeServer();
+  await loadSavedOrgs();
+  assert.equal(savedOrgsLocation(), 'file');
+  const e = rememberOrg('source', { instanceUrl: 'https://acme.my.salesforce.com', clientId: 'k1', org: { Name: 'Acme', IsSandbox: false } });
+  await tick();
+  const doc = JSON.parse(srv.file);
+  assert.equal(doc.orgs[0].clientId, 'k1');
+  assert.equal(doc.lastUsed.source, e.id);
+  assert.equal(window.localStorage.getItem('sfseed.orgs'), null, 'nothing in the browser');
+
+  // A later session (fresh page) reads them back from the file.
+  globalThis.window = { localStorage: memoryStorage() };
+  await loadSavedOrgs();
+  assert.equal(listSavedOrgs()[0].host, 'acme.my.salesforce.com');
+  assert.equal(lastUsed('source'), e.id);
+  globalThis.fetch = realFetch;
+});
+
+test('orgs saved in the browser by the previous version move into the file once', async () => {
+  window.localStorage.setItem('sfseed.orgs', JSON.stringify([{ id: 'org_old', host: 'old.my.salesforce.com', name: 'Old', clientId: 'k0', lastUsedAt: '2026-11-01' }]));
+  window.localStorage.setItem('sfseed.orgs.last', JSON.stringify({ target: 'org_old' }));
+  const srv = fakeServer({ version: 1, orgs: [{ id: 'org_new', host: 'new.my.salesforce.com', name: 'New', clientId: 'k9', lastUsedAt: '2026-11-05' }], lastUsed: {} });
+  await loadSavedOrgs();
+  await tick();
+  assert.deepEqual(listSavedOrgs().map((o) => o.host), ['new.my.salesforce.com', 'old.my.salesforce.com']);
+  assert.equal(lastUsed('target'), 'org_old');
+  assert.equal(JSON.parse(srv.file).orgs.length, 2);
+  assert.equal(window.localStorage.getItem('sfseed.orgs'), null, 'browser copy removed after the move');
+  globalThis.fetch = realFetch;
 });
