@@ -1,6 +1,7 @@
 // Tab 3: validate, dry run, run, monitor, download results, roll back.
 import { h, clear, fmtNum, plural } from '../util.js';
-import { state, on } from '../store.js';
+import { state, on, runsFromSnapshot, snapshotState } from '../store.js';
+import { snapshotSummary } from '../snapshot.js';
 import {
   validate, execute, stop, isBusy, rollbackRun, rollbackCandidates, downloadIdMap, downloadFailures, downloadLog, clearLog,
 } from '../runController.js';
@@ -27,8 +28,17 @@ export function renderRunView(container) {
   const busy = isBusy();
   const s = state.conn.source;
   const t = state.conn.target;
-  const ready = s.status === 'connected' && t.status === 'connected';
+  const fromSnap = runsFromSnapshot();
+  const targetOk = t.status === 'connected';
+  const ready = targetOk && (fromSnap || s.status === 'connected');
   const enabledSteps = state.plan.steps.filter((x) => x.enabled !== false).length;
+  const { snap, stale } = snapshotState();
+  const sourceName = fromSnap ? `Captured data (${snap.source.orgName || 'Source'})` : (s.org ? s.org.Name : 'Source');
+  let notReady = '';
+  if (!targetOk && fromSnap) notReady = 'This plan includes captured records, so only the Target org is needed. Connect it on the Connect tab.';
+  else if (!targetOk && s.status !== 'connected') notReady = 'Connect the Source and Target orgs on the Connect tab first (or import a template that includes record data; then only the Target is needed).';
+  else if (!targetOk) notReady = 'Connect the Target org on the Connect tab first.';
+  else if (!ready) notReady = stale ? 'The captured data is out of date because the plan changed. Connect the Source org to read fresh records, or re-import the template.' : 'Connect the Source org on the Connect tab first, or import a template that includes record data.';
 
   const progress = h('div', { class: 'progress-wrap' });
   const logEl = h('div', { class: 'log', role: 'log', 'aria-live': 'polite' });
@@ -39,8 +49,9 @@ export function renderRunView(container) {
       h('div', null,
         h('h1', null, 'Validate & run'),
         h('p', { class: 'muted small' },
-          ready ? [h('strong', null, s.org ? s.org.Name : 'Source'), ' → ', h('strong', null, t.org ? t.org.Name : 'Target'), ' ', t.org && t.org.IsSandbox === false ? badge('PRODUCTION', 'danger') : badge('Sandbox', 'info'), ` · ${plural(enabledSteps, 'step')}`]
-            : 'Connect both orgs on the Connect tab first.')),
+          ready ? [h('strong', null, sourceName), ' → ', h('strong', null, t.org ? t.org.Name : 'Target'), ' ', t.org && t.org.IsSandbox === false ? badge('PRODUCTION', 'danger') : badge('Sandbox', 'info'), ` · ${plural(enabledSteps, 'step')}`]
+            : notReady),
+        fromSnap ? h('p', { class: 'small muted' }, `Runs insert the captured records (${snapshotSummary(snap)}). The Source org is not queried.`) : null),
       h('div', { class: 'toolbar-actions' },
         h('button', { class: 'btn', disabled: busy || !ready, onclick: validate, title: 'Schema checks, query validation and preview counts' }, 'Validate'),
         h('button', { class: 'btn', disabled: busy || !ready, onclick: () => execute({ dryRun: true }), title: 'Extract and run every pre-flight check without inserting anything' }, 'Dry run'),
@@ -57,7 +68,7 @@ export function renderRunView(container) {
     if (run.staticReport || run.dataReport) view.appendChild(reportCard(run));
     if (run.extraction || run.result) view.appendChild(resultsCard(run));
   }
-  if (!busy && run && run.related && run.related.length && run.extraction) view.appendChild(relatedCard(run));
+  if (!busy && run && run.related && run.related.length && run.extraction && !run.extraction.fromSnapshot) view.appendChild(relatedCard(run));
   const rb = !busy ? rollbackCandidates() : null;
   if (rb) view.appendChild(rollbackCard(rb));
 
@@ -123,7 +134,7 @@ function resultsCard(run) {
     return h('tr', null,
       h('td', null, String(i + 1)),
       h('td', null, step.object),
-      h('td', { class: 'num' }, c ? (c.count === null ? 'referenced' : `${fmtNum(c.expected)}${c.scoped ? ' (max)' : ''}${c.referenced ? ' + ref.' : ''}`) : '—'),
+      h('td', { class: 'num' }, c ? (c.count === null ? 'referenced' : `${fmtNum(c.expected)}${c.captured ? ' captured' : ''}${c.scoped ? ' (max)' : ''}${c.referenced ? ' + ref.' : ''}`) : '—'),
       h('td', { class: 'num' }, ex ? fmtNum(ex.extracted) : '—'),
       h('td', { class: 'num success-text' }, st ? fmtNum(st.inserted) : '—'),
       h('td', { class: ['num', st && st.failed + st.skipped ? 'danger-text' : ''] }, st ? fmtNum(st.failed + st.skipped) : '—'),

@@ -1,15 +1,18 @@
 // Tab 1: connect Source and Target orgs.
 import { h, fmtNum } from '../util.js';
-import { state } from '../store.js';
+import { state, snapshotState } from '../store.js';
+import { snapshotSummary } from '../snapshot.js';
 import { ENVIRONMENTS } from '../auth.js';
 import { connect, disconnect, cancelConnect, getLoginPrefs } from '../connections.js';
 import { badge, toast, formRow, select } from './components.js';
 import { openSettings, openSetupGuide } from './settingsModal.js';
 
 const ROLE_INFO = {
-  source: { title: 'Source org', text: 'Where records are copied from. Read-only: this tool only queries it.' },
+  source: { title: 'Source org', text: 'Where records are copied from. Read-only: this tool only queries it. Needed to build a plan and to read records.' },
   target: { title: 'Target org', text: 'The sandbox that receives the records.' },
 };
+
+const maskKey = (k) => (k.length > 12 ? `${k.slice(0, 6)}…${k.slice(-4)}` : k);
 
 export function renderConnectView(container) {
   const needsClientId = !state.settings.clientId && !getLoginPrefs('source').clientId && !getLoginPrefs('target').clientId;
@@ -19,14 +22,24 @@ export function renderConnectView(container) {
       h('p', { class: 'muted' }, 'Sign in to both orgs with OAuth. Access tokens stay in this browser tab (sessionStorage) and are never written to disk.')),
     needsClientId ? h('div', { class: 'callout callout-warning' },
       h('strong', null, 'One-time setup needed. '),
-      'Enter the Consumer Key of your External Client App before connecting. ',
-      h('button', { class: 'link-btn', onclick: openSettings }, 'Open Settings'), ' · ',
-      h('button', { class: 'link-btn', onclick: openSetupGuide }, 'External Client App setup guide')) : null,
+      'Paste the Consumer Key of your External Client App into the Consumer Key box on the org card below. The first key you enter is also used for the other org unless you enter a different one there. Each card has a setup guide button if the app does not exist yet.') : null,
+    whichOrgsNote(),
     h('div', { class: 'org-grid' }, orgCard('source'), h('div', { class: 'org-arrow', 'aria-hidden': 'true' }, '→'), orgCard('target')),
     h('p', { class: 'muted small' },
-      `Transport: ${state.settings.transport === 'proxy' ? 'Local proxy (via server.ps1)' : 'Direct (browser to Salesforce; requires CORS allowlist)'} · Sign-in: OAuth 2.0 + PKCE · API version: newest per org · `,
-      h('button', { class: 'link-btn', onclick: openSettings }, 'Change'), ' · ',
-      h('button', { class: 'link-btn', onclick: openSetupGuide }, 'Setup guide'))));
+      `Transport: ${state.settings.transport === 'proxy' ? 'Local proxy (via the start script)' : 'Direct (browser to Salesforce; requires CORS allowlist)'} · Sign-in: OAuth 2.0 + PKCE · API version: newest per org · `,
+      h('button', { class: 'link-btn', onclick: openSettings }, 'Change'))));
+}
+
+/** Which connections the current plan needs. */
+function whichOrgsNote() {
+  const { snap, usable } = snapshotState();
+  if (usable) {
+    return h('div', { class: 'callout callout-info' },
+      h('strong', null, 'Only the Target org is needed for this plan. '),
+      `It includes captured record data (${snapshotSummary(snap)}). Connect the Source org only if you want to change the plan or read fresh records.`);
+  }
+  return h('p', { class: 'muted small' },
+    'Building a plan and reading records needs the Source org. Running a template exported with ', h('strong', null, 'record data'), ' needs only the Target org.');
 }
 
 function orgCard(role) {
@@ -96,19 +109,24 @@ function orgCard(role) {
   const syncBtn = () => {
     const has = !!(orgKey.trim() || state.settings.clientId);
     connectBtn.disabled = !has;
-    connectBtn.title = has ? '' : 'Set the Consumer Key in Settings (or under Advanced) first';
+    connectBtn.title = has ? '' : 'Paste the Consumer Key first';
   };
+  const shared = state.settings.clientId;
   const keyInput = h('input', {
-    type: 'text', class: 'input mono', value: orgKey, spellcheck: 'false',
-    placeholder: state.settings.clientId ? 'Leave blank to use the key from Settings' : '3MVG9…',
+    type: 'text', class: 'input mono', value: orgKey, spellcheck: 'false', autocomplete: 'off',
+    placeholder: shared ? `Leave blank to use ${maskKey(shared)}` : 'Paste the Consumer Key (starts with 3MVG9…)',
+    'aria-label': `Consumer Key for the ${info.title}`,
     oninput: (e) => { orgKey = e.target.value; syncBtn(); },
   });
   syncBtn();
+  const keyHint = shared
+    ? `Blank uses the shared key ${maskKey(shared)} (from Settings or the first org you connected). Enter a different key only if this org has its own External Client App.`
+    : 'From your External Client App: Settings > OAuth Settings > Consumer Key and Secret. No secret is needed.';
   if (conn.error) card.appendChild(h('div', { class: 'callout callout-danger small', role: 'alert' }, conn.error));
   card.appendChild(h('div', { class: 'form-stack' }, formRow('Login environment', envSelect), domainRow,
-    h('details', { class: 'advanced', open: !!orgKey },
-      h('summary', null, 'Advanced'),
-      formRow('Consumer Key for this org (optional)', keyInput, 'Only needed when this org has its own External Client App with a different key.'))));
+    h('div', { class: 'key-block' },
+      formRow('Consumer Key', keyInput, keyHint),
+      h('button', { class: 'btn btn-small guide-btn', type: 'button', onclick: openSetupGuide }, 'External Client App Setup Guide'))));
   card.appendChild(h('div', { class: 'card-actions' }, connectBtn));
   return card;
 }

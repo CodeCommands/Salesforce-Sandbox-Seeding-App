@@ -5,7 +5,7 @@ import { login, getSession, clearSession, consumeRedirectResult, cancelLogin, RO
 import { RecordTypeIndex, RT_SOQL, isSeedableObject, keyPrefixMap } from './schema.js';
 import { quote } from './soql.js';
 import { storage } from './util.js';
-import { FALLBACK_API_VERSION, latestApiVersion } from './config.js';
+import { FALLBACK_API_VERSION, latestApiVersion, saveSettings } from './config.js';
 
 const PREFS_KEY = 'sfseed.loginPrefs';
 
@@ -79,7 +79,14 @@ async function introspect(role, session) {
 }
 
 export async function connect(role, { env, customDomain, clientId = '' }) {
-  saveLoginPrefs(role, { env, customDomain, clientId: String(clientId || '').trim() });
+  const key = String(clientId || '').trim();
+  if (key && !state.settings.clientId) {
+    // The first key entered becomes the shared default, so the other org's card can be left blank.
+    state.settings = saveSettings({ clientId: key });
+    saveLoginPrefs(role, { env, customDomain, clientId: '' });
+  } else {
+    saveLoginPrefs(role, { env, customDomain, clientId: key === state.settings.clientId ? '' : key });
+  }
   const conn = state.conn[role];
   conn.status = 'authorizing';
   conn.error = null;

@@ -83,9 +83,13 @@ export async function buildUserMap({ source, target, sourceInfo, targetInfo, sig
   if (!userIds.size) return { map, matched, unmatched };
 
   const srcUsers = [];
-  for (const ids of chunk([...userIds], CHUNK)) {
-    const recs = await source.queryAll(`SELECT Id, Username, Name, IsActive FROM User WHERE Id IN (${ids.map(quote).join(',')})`, { signal });
-    srcUsers.push(...recs);
+  if (typeof source.lookupUsers === 'function') {
+    srcUsers.push(...await source.lookupUsers([...userIds])); // captured data: usernames were saved with the records
+  } else {
+    for (const ids of chunk([...userIds], CHUNK)) {
+      const recs = await source.queryAll(`SELECT Id, Username, Name, IsActive FROM User WHERE Id IN (${ids.map(quote).join(',')})`, { signal });
+      srcUsers.push(...recs);
+    }
   }
   const found = new Set(srcUsers.map((u) => u.Id));
   for (const id of userIds) if (!found.has(id)) unmatched.push({ sourceId: id, username: '', reason: 'not visible in the Source org' });

@@ -3,7 +3,9 @@ import { uid, downloadText, slugify } from './util.js';
 import { OPERATORS } from './soql.js';
 
 export const TEMPLATE_FORMAT = 'sf-sandbox-seeding-template';
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2; // 1 = plan only; 2 adds the optional "data" block (captured records)
+export const DATA_FORMAT = 'records-v1';
+const ID_RE = /^[a-zA-Z0-9]{15,18}$/;
 
 export const DEFAULT_PLAN_SETTINGS = Object.freeze({
   matchUsersByUsername: true, // User lookups (OwnerId…) are mapped to the target user with the same Username (sandbox suffixes handled)
@@ -59,11 +61,14 @@ export function newFilter() {
   return { id: uid('flt'), field: '', operator: 'eq', value: '' };
 }
 
-/** Produces the exported document (stable key order, no runtime-only data). */
-export function toTemplate(plan) {
-  return {
+/**
+ * Produces the exported document (stable key order, no runtime-only data).
+ * With `snapshot`, the captured records are included so the template can run with only a Target org.
+ */
+export function toTemplate(plan, { snapshot = null } = {}) {
+  const doc = {
     format: TEMPLATE_FORMAT,
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: snapshot ? 2 : 1,
     name: plan.name,
     description: plan.description || '',
     createdAt: plan.createdAt,
@@ -86,12 +91,133 @@ export function toTemplate(plan) {
       referencedBy: (s.referencedBy || []).map((r) => ({ stepId: r.stepId, field: r.field })),
     })),
   };
+  if (snapshot) doc.data = serializeData(snapshot, plan);
+  return doc;
 }
 
-export function exportTemplate(plan) {
-  const doc = toTemplate(plan);
-  downloadText(`${slugify(plan.name)}.seed.json`, JSON.stringify(doc, null, 2));
+export function exportTemplate(plan, { snapshot = null } = {}) {
+  const doc = toTemplate(plan, { snapshot });
+  // Records make the file large; indenting it would roughly double the size.
+  const text = snapshot ? JSON.stringify(doc) : JSON.stringify(doc, null, 2);
+  downloadText(`${slugify(plan.name)}${snapshot ? '.seed-data' : '.seed'}.json`, text);
   return doc;
+}
+
+// ---------------------------------------------------------------------------
+// Captured data ("data" block): the records a plan extracted, plus the bits of Source metadata the
+// insert needs (field describes, Id prefixes, usernames), so a run needs only the Target org.
+// ---------------------------------------------------------------------------
+
+function serializeData(snap, plan) {
+  const steps = {};
+  for (const s of plan.steps) if (snap.steps[s.id]) steps[s.id] = snap.steps[s.id];
+  return {
+    format: DATA_FORMAT,
+    capturedAt: snap.capturedAt,
+    source: snap.source,
+    total: Object.values(steps).reduce((n, x) => n + x.records.length, 0),
+    keyPrefixes: snap.keyPrefixes,
+    objects: snap.objects,
+    users: snap.users,
+    steps,
+  };
+}
+
+const str = (v, max = 255) => (typeof v === 'string' ? v.slice(0, max) : '');
+
+/** Validates an imported "data" block. Step keys are re-pointed with idRemap. Throws when unusable. */
+export function parseData(data, idRemap) {
+  if (!isObj(data)) throw new Error('"data" must be an object');
+  if (data.format !== DATA_FORMAT) throw new Error(`Unknown data format "${data.format}"`);
+  if (!isObj(data.objects) || !isObj(data.steps)) throw new Error('"data" is missing "objects" or "steps"');
+  const objects = {};
+  for (const [name, d] of Object.entries(data.objects)) {
+    if (!API_NAME.test(name) || !isObj(d) || !Array.isArray(d.fields)) throw new Error(`"data.objects.${name}" is not a valid object description`);
+    objects[name] = {
+      name: API_NAME.test(d.name) ? d.name : name,
+      label: str(d.label) || name,
+      labelPlural: str(d.labelPlural) || str(d.label) || name,
+      keyPrefix: typeof d.keyPrefix === 'string' ? d.keyPrefix.slice(0, 3) : null,
+      queryable: true,
+      createable: d.createable !== false,
+      fields: d.fields.filter((f) => isObj(f) && typeof f.name === 'string' && API_NAME.test(f.name)).map((f) => ({
+        name: f.name,
+        label: str(f.label) || f.name,
+        type: str(f.type, 40),
+        referenceTo: Array.isArray(f.referenceTo) ? f.referenceTo.filter((r) => typeof r === 'string' && API_NAME.test(r)) : [],
+        relationshipName: typeof f.relationshipName === 'string' ? f.relationshipName : null,
+        nillable: f.nillable !== false,
+        createable: !!f.createable,
+        updateable: !!f.updateable,
+        defaultedOnCreate: !!f.defaultedOnCreate,
+        nameField: !!f.nameField,
+        filterable: !!f.filterable,
+        sortable: !!f.sortable,
+      })),
+    };
+  }
+  const keyPrefixes = {};
+  for (const [k, v] of Object.entries(isObj(data.keyPrefixes) ? data.keyPrefixes : {})) {
+    if (/^[a-zA-Z0-9]{3}$/.test(k) && typeof v === 'string' && API_NAME.test(v)) keyPrefixes[k] = v;
+  }
+  const users = {};
+  for (const [k, v] of Object.entries(isObj(data.users) ? data.users : {})) {
+    if (ID_RE.test(k) && isObj(v)) users[k] = { Username: str(v.Username), Name: str(v.Name), IsActive: v.IsActive !== false };
+  }
+  const steps = {};
+  let total = 0;
+  for (const [oldId, entry] of Object.entries(data.steps)) {
+    const id = idRemap.get(oldId);
+    if (!id || !isObj(entry) || !Array.isArray(entry.records)) continue;
+    const records = entry.records.filter((r) => isObj(r) && typeof r.Id === 'string' && ID_RE.test(r.Id));
+    steps[id] = { records, stats: isObj(entry.stats) ? entry.stats : {} };
+    total += records.length;
+  }
+  const src = isObj(data.source) ? data.source : {};
+  return {
+    capturedAt: str(data.capturedAt, 40),
+    source: {
+      orgId: str(src.orgId, 18),
+      orgName: str(src.orgName),
+      isSandbox: !!src.isSandbox,
+      instanceUrl: str(src.instanceUrl, 300),
+      username: str(src.username),
+    },
+    keyPrefixes,
+    objects,
+    users,
+    steps,
+    total,
+  };
+}
+
+/**
+ * Fixes a pair of links that contradict each other on the same lookup, e.g. Contact limited to the
+ * children of the Account step (via AccountId) while the Account step also takes "the Accounts those
+ * Contacts point to" (via AccountId). Each would have to be extracted before the other.
+ * - Account takes only referenced records: keep that, drop the Contact scope (Contacts use their own filters).
+ * - Otherwise the reference adds nothing (every scoped Contact already points to an extracted Account): drop it.
+ * Returns human-readable messages for what was changed.
+ */
+export function resolveContradictoryLinks(plan) {
+  const messages = [];
+  for (const child of plan.steps) {
+    for (const sc of [...(child.parentScopes || [])]) {
+      const parent = plan.steps.find((s) => s.id === sc.stepId);
+      if (!parent || parent.id === child.id) continue;
+      const ref = (parent.referencedBy || []).find((r) => r.stepId === child.id && r.field.toLowerCase() === sc.field.toLowerCase());
+      if (!ref) continue;
+      if (effectiveRecordSource(parent) === 'referenced') {
+        child.parentScopes = child.parentScopes.filter((x) => x !== sc);
+        messages.push(`Fixed a loop between ${parent.object} and ${child.object}: ${parent.object} takes the ${parent.object} records your ${child.object} records point to, so ${child.object} can no longer also be limited to those ${parent.object} records. ${child.object} now uses its own filters and LIMIT.`);
+      } else {
+        parent.referencedBy = parent.referencedBy.filter((x) => x !== ref);
+        if (!parent.referencedBy.length) parent.recordSource = 'query';
+        messages.push(`Fixed a loop between ${parent.object} and ${child.object}: ${child.object} already takes only the ${child.object} records of the selected ${parent.object} records, so the extra link "${parent.object} records that ${child.object} points to" was removed. It added no records.`);
+      }
+    }
+  }
+  return messages;
 }
 
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
@@ -200,7 +326,18 @@ export function parseTemplate(text, { keepIds = false } = {}) {
     if (!step.referencedBy.length) step.recordSource = 'query';
   }
   if (!plan.steps.length) warnings.push('Template contains no usable steps');
-  return { plan, warnings };
+  let snapshot = null;
+  if (doc.data !== undefined && doc.data !== null) {
+    try {
+      snapshot = parseData(doc.data, idRemap);
+    } catch (e) {
+      warnings.push(`The captured record data could not be used (${e.message}). The plan was imported without it.`);
+    }
+  }
+  // Only after the data is mapped: fixing links changes what would be extracted, so captured data
+  // for a plan with contradictory links would not exist in the first place.
+  warnings.push(...resolveContradictoryLinks(plan));
+  return { plan, warnings, snapshot };
 }
 
 function clampBatch(v) {
@@ -211,10 +348,67 @@ function clampBatch(v) {
 
 /** Plans are persisted between page loads as drafts in the same shape as templates. */
 export function planFromDraft(draft) {
+  const res = draftFromStorage(draft);
+  return res ? res.plan : null;
+}
+
+/** Like planFromDraft, but also returns the messages for links that were repaired. */
+export function draftFromStorage(draft) {
   if (!draft) return null;
   try {
-    return parseTemplate(draft, { keepIds: true }).plan;
+    const { plan, warnings } = parseTemplate(draft, { keepIds: true });
+    return { plan, warnings: warnings.filter((w) => w.startsWith('Fixed a loop')) };
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Links between steps. link = { owner, kind: 'scope' | 'reference', other, field }
+//   scope:     owner takes only records whose `field` points to a record of step `other` (children of other)
+//   reference: owner takes the records that step `other` points to through other.`field` (parents of other);
+//              other === owner is a parent hierarchy (e.g. Account.ParentId)
+// ---------------------------------------------------------------------------
+
+const sameField = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+const nonSelfRefs = (step) => (step.referencedBy || []).filter((r) => r.stepId !== step.id);
+
+export function hasLink(step, link) {
+  if (link.kind === 'scope') return (step.parentScopes || []).some((p) => p.stepId === link.other && sameField(p.field, link.field));
+  return (step.referencedBy || []).some((r) => r.stepId === link.other && sameField(r.field, link.field));
+}
+
+/** All links a step owns, in the order they were added. */
+export function linksOf(step) {
+  return [
+    ...(step.parentScopes || []).map((p) => ({ owner: step.id, kind: 'scope', other: p.stepId, field: p.field })),
+    ...(step.referencedBy || []).map((r) => ({ owner: step.id, kind: 'reference', other: r.stepId, field: r.field })),
+  ];
+}
+
+export function addLink(plan, link) {
+  const step = plan.steps.find((s) => s.id === link.owner);
+  if (!step || hasLink(step, link)) return step || null;
+  if (link.kind === 'scope') {
+    step.parentScopes = [...(step.parentScopes || []), { field: link.field, stepId: link.other }];
+    return step;
+  }
+  step.referencedBy = [...(step.referencedBy || []), { stepId: link.other, field: link.field }];
+  // The first link to other steps decides the default: only those records, unless the step has its own filters.
+  if (link.other !== step.id && nonSelfRefs(step).length === 1 && step.recordSource !== 'both') {
+    step.recordSource = (step.filters || []).length || (step.advancedWhere || '').trim() ? 'both' : 'referenced';
+  }
+  return step;
+}
+
+export function removeLink(plan, link) {
+  const step = plan.steps.find((s) => s.id === link.owner);
+  if (!step) return null;
+  if (link.kind === 'scope') {
+    step.parentScopes = (step.parentScopes || []).filter((p) => !(p.stepId === link.other && sameField(p.field, link.field)));
+  } else {
+    step.referencedBy = (step.referencedBy || []).filter((r) => !(r.stepId === link.other && sameField(r.field, link.field)));
+    if (!nonSelfRefs(step).length) step.recordSource = 'query';
+  }
+  return step;
 }

@@ -1,14 +1,15 @@
 // Application bootstrap: settings, sessions, routing between tabs, template import/export.
-import { h, clear, readFileAsText } from './util.js';
+import { h, clear, readFileAsText, plural } from './util.js';
 import { loadConfig } from './config.js';
-import { state, on, emit, restoreDraft, flushDraft, setPlan } from './store.js';
+import { state, on, emit, restoreDraft, flushDraft, setPlan, runsFromSnapshot } from './store.js';
 import { restoreConnections } from './connections.js';
-import { newPlan, exportTemplate, parseTemplate } from './template.js';
+import { newPlan, parseTemplate } from './template.js';
 import { isBusy } from './runController.js';
 import { renderConnectView } from './ui/connectView.js';
 import { renderPlanView, refreshPlanParts } from './ui/planView.js';
 import { renderRunView } from './ui/runView.js';
 import { openSettings, openSetupGuide } from './ui/settingsModal.js';
+import { openExportDialog } from './ui/exportDialog.js';
 import { toast, confirmModal, badge, openModal } from './ui/components.js';
 
 const VIEWS = {
@@ -48,6 +49,7 @@ function renderOrgStrip() {
         c.org && c.org.IsSandbox === false ? badge('Production', role === 'target' ? 'danger' : 'neutral') : badge('Sandbox', 'info')];
     } else if (c.status === 'expired') status = badge('Session expired', 'warning');
     else if (c.status === 'connecting' || c.status === 'authorizing') status = badge('Connecting…', 'info');
+    else if (role === 'source' && runsFromSnapshot()) status = badge('captured data', 'info');
     else status = h('span', { class: 'muted' }, 'not connected');
     return h('button', { class: 'org-chip', onclick: () => go('connect'), title: `${label} org` }, h('span', { class: 'muted small' }, `${label}:`), ' ', status);
   };
@@ -80,7 +82,7 @@ function wireEvents() {
     renderOrgStrip();
     if (state.view === 'connect' || state.view === 'plan' || state.view === 'run') scheduleRender();
   });
-  on('plan', () => { if (state.view === 'plan') scheduleRender(); else renderNav(); });
+  on('plan', () => { renderOrgStrip(); scheduleRender(); });
   on('plan:silent', () => { if (state.view === 'plan') refreshPlanParts('silent'); renderNav(); });
   on('plan:describe', () => { if (state.view === 'plan' && !refreshPlanParts('describe')) scheduleRender(); });
   on('plan:name', renderNav);
@@ -92,11 +94,7 @@ function wireEvents() {
   document.getElementById('btn-settings').addEventListener('click', openSettings);
   document.getElementById('btn-help').addEventListener('click', openHelp);
   document.getElementById('btn-new').addEventListener('click', newTemplate);
-  document.getElementById('btn-export').addEventListener('click', () => {
-    if (!state.plan.steps.length) return toast('Add at least one object before exporting.', 'warning');
-    exportTemplate(state.plan);
-    toast('Template downloaded', 'success');
-  });
+  document.getElementById('btn-export').addEventListener('click', openExportDialog);
   const fileInput = document.getElementById('file-import');
   document.getElementById('btn-import').addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', async () => {
@@ -134,7 +132,7 @@ async function newTemplate() {
 
 async function importFile(file) {
   if (isBusy()) return toast('Wait for the current run to finish.', 'warning');
-  if (file.size > 5 * 1024 * 1024) return toast('That file is too large to be a seeding template.', 'error');
+  if (file.size > 200 * 1024 * 1024) return toast('That file is too large to be a seeding template (over 200 MB).', 'error');
   let parsed;
   try {
     parsed = parseTemplate(await readFileAsText(file));
@@ -145,9 +143,14 @@ async function importFile(file) {
     const ok = await confirmModal({ title: `Import "${parsed.plan.name}"?`, message: 'This replaces the current plan.', confirmLabel: 'Import' });
     if (!ok) return;
   }
-  setPlan(parsed.plan);
-  for (const w of parsed.warnings) toast(w, 'warning');
-  toast(`Imported "${parsed.plan.name}" with ${parsed.plan.steps.length} steps. Validate it against your orgs on the Validate & run tab.`, 'success');
+  setPlan(parsed.plan, { snapshot: parsed.snapshot });
+  for (const w of parsed.warnings) toast(w, 'warning', 8000);
+  if (parsed.snapshot) {
+    const targetOk = state.conn.target.status === 'connected';
+    toast(`Imported "${parsed.plan.name}" with ${plural(parsed.snapshot.total, 'record')} of captured data. Only the Target org is needed: ${targetOk ? 'open Validate & run.' : 'connect it on the Connect tab, then Validate & run.'}`, 'success', 8000);
+  } else {
+    toast(`Imported "${parsed.plan.name}" with ${parsed.plan.steps.length} steps. It reads records from the Source org, so connect both orgs, then Validate & run.`, 'success', 8000);
+  }
   state.view = 'plan';
   render();
 }
@@ -163,31 +166,32 @@ function openHelp() {
         h('li', null, h('strong', null, 'Find related records'), ' (any time, from the plan or after a dry run): the app checks the selected records for lookups to records that are not in the plan, shows them, and adds them on request, as a new step or into an existing one. Scan again to follow the chain further.'),
         h('li', null, h('strong', null, 'Validate'), ' to check schema compatibility and preview counts; ', h('strong', null, 'Dry run'), ' to also extract records and verify every Record Type exists in the Target.'),
         h('li', null, h('strong', null, 'Run'), ': records are inserted parent-first. Lookups are rewritten to the new Target Ids, hierarchies (e.g. Account.ParentId) are inserted level by level, and circular lookups are filled in by a final update pass.'),
-        h('li', null, h('strong', null, 'Export'), ' the plan as a JSON template to reuse or share; ', h('strong', null, 'Import'), ' (or drag a file onto the page) to load one.')),
+        h('li', null, h('strong', null, 'Export'), ' the plan as a JSON template to reuse or share; ', h('strong', null, 'Import'), ' (or drag a file onto the page) to load one. Choose ', h('strong', null, 'Plan + record data'), ' to include a copy of the records: that file runs with only the Target org connected.')),
       h('p', { class: 'muted small' }, 'User lookups such as OwnerId are matched to the Target user with the same Username (sandbox suffixes like ".uat" are handled); unmatched users are left blank so you become the owner. Other lookups to records outside the plan are left blank.'),
       h('p', null, h('button', { class: 'link-btn', onclick: openSetupGuide }, 'External Client App setup guide'))),
   });
 }
 
-/** The default transport relays through server.ps1; warn early if the page was opened some other way. */
+/** The default transport relays through the local server (server.ps1 or server.pl); warn early if the page was opened some other way. */
 async function checkProxy() {
   try {
     const res = await fetch('/api/health', { cache: 'no-store' });
     const data = res.ok ? await res.json() : null;
     if (data && data.proxy) return;
   } catch { /* fall through */ }
-  toast('The local proxy is not available. Start the app with start.bat, or switch Transport to "Direct" in Settings.', 'error', 8000);
+  toast('The local proxy is not available. Start the app with start.bat (Windows) or start.command (macOS), or switch Transport to "Direct" in Settings.', 'error', 8000);
 }
 
 async function boot() {
   state.settings = await loadConfig();
-  restoreDraft();
+  const repaired = restoreDraft();
   try {
     const v = sessionStorage.getItem('sfseed.view');
     if (v && VIEWS[v]) state.view = v;
   } catch { /* ignore */ }
   wireEvents();
   render();
+  for (const w of repaired) toast(w, 'info', 10000);
   if (state.settings.transport === 'proxy') await checkProxy();
   await restoreConnections();
   if (state.view === 'connect' && state.conn.source.status === 'connected' && state.conn.target.status === 'connected' && !sessionStorage.getItem('sfseed.view')) {

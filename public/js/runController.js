@@ -1,10 +1,11 @@
 // Orchestrates validation, dry runs, seeding runs and rollback; owns state.run and the run log.
-import { state, emit, getLastRun, saveLastRun, clearLastRun } from './store.js';
+import { state, emit, getLastRun, saveLastRun, clearLastRun, runsFromSnapshot } from './store.js';
 import { staticPreflight, dataPreflight } from './preflight.js';
 import { extract, load, createLoadResult, rollback } from './engine.js';
 import { refreshLimits } from './connections.js';
 import { orgUserInfo } from './users.js';
 import { findMissingReferences, scanPlan } from './discovery.js';
+import { SnapshotSource, snapshotExtraction, snapshotKeyPrefixes, captureSnapshot } from './snapshot.js';
 import { timestamp, toCsv, downloadText, fileStamp, slugify, fmtNum, plural } from './util.js';
 
 const MAX_LOG = 5000;
@@ -51,9 +52,29 @@ function setLabel(label) {
   emit('run');
 }
 
-function ctx(signal = state.run.abort.signal) {
+function ctx(signal = state.run.abort.signal, { live = false } = {}) {
   const s = state.conn.source;
   const t = state.conn.target;
+  if (!live && runsFromSnapshot()) {
+    // Captured data stands in for the Source org (which may not be connected at all).
+    const snap = state.snapshot;
+    return {
+      fromSnapshot: true,
+      sourceGlobal: [],
+      userInfo: { source: { isSandbox: snap.source.isSandbox, instanceUrl: snap.source.instanceUrl, username: snap.source.username, suffix: null }, target: orgUserInfo(t) },
+      source: new SnapshotSource(snap),
+      target: t.status === 'connected' ? t.client : null,
+      orgs: { source: { Id: snap.source.orgId, Name: snap.source.orgName, IsSandbox: snap.source.isSandbox }, target: t.org },
+      sourceRt: null,
+      targetRt: t.rt,
+      sourceKeyPrefixes: snapshotKeyPrefixes(snap),
+      plan: state.plan,
+      appSettings: state.settings,
+      signal,
+      log,
+      progress,
+    };
+  }
   return {
     sourceGlobal: s.global || [],
     userInfo: { source: orgUserInfo(s), target: orgUserInfo(t) },
@@ -137,8 +158,9 @@ export async function execute({ dryRun = false, confirm }) {
       return finish('blocked');
     }
 
-    setLabel('Extracting source records');
-    const extraction = await extract(c);
+    setLabel(c.fromSnapshot ? 'Loading captured records' : 'Extracting source records');
+    const extraction = c.fromSnapshot ? snapshotExtraction(state.plan, state.snapshot) : await extract(c);
+    if (c.fromSnapshot) log('info', `Using ${plural(extraction.total, 'captured record')} instead of querying the Source org.`);
     run.extraction = extraction;
     emit('run');
 
@@ -305,6 +327,33 @@ function relatedFindings(c, extraction) {
 }
 
 /**
+ * Extracts the plan from the Source org (read-only) and returns captured data for export.
+ * Does not touch state.run, so it can run from the export dialog at any time.
+ */
+export async function captureData({ signal, onProgress } = {}) {
+  const s = state.conn.source;
+  if (s.status !== 'connected') throw new Error('Connect the Source org to capture records.');
+  if (!state.plan.steps.some((x) => x.enabled !== false)) throw new Error('Add at least one object to the plan first.');
+  const base = {
+    source: s.client,
+    plan: state.plan,
+    appSettings: state.settings,
+    sourceKeyPrefixes: s.keyPrefixes || new Map(),
+    signal: signal || new AbortController().signal,
+    log: () => {},
+    progress: onProgress || (() => {}),
+    sourceInfo: {
+      orgId: s.org ? s.org.Id : '',
+      orgName: s.org ? s.org.Name : '',
+      isSandbox: !!(s.org && s.org.IsSandbox),
+      instanceUrl: s.session ? s.session.instanceUrl : '',
+      username: s.user ? s.user.Username : '',
+    },
+  };
+  return captureSnapshot(base);
+}
+
+/**
  * Read-only scan of the Source org for lookups that point outside the plan (used by the
  * "Find related records" dialog). Needs only the Source connection.
  */
@@ -313,7 +362,7 @@ export async function scanRelatedRecords({ signal, onProgress } = {}) {
   if (s.status !== 'connected') throw new Error('Connect the Source org first.');
   if (!state.plan.steps.some((x) => x.enabled !== false)) throw new Error('Add at least one object to the plan first.');
   const c = {
-    ...ctx(signal || new AbortController().signal),
+    ...ctx(signal || new AbortController().signal, { live: true }),
     log: () => {},
     progress: onProgress || (() => {}),
   };

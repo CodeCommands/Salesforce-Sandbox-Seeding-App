@@ -1,6 +1,8 @@
-# Seeding template format (schemaVersion 1)
+# Seeding template format (schemaVersion 1 and 2)
 
-A template is a JSON file (`*.seed.json`) describing a seeding plan. It holds no data and no org-specific Ids: objects and fields are referenced by API name, and Record Types by **DeveloperName**. That way the same template works against any pair of orgs.
+A template is a JSON file (`*.seed.json`) describing a seeding plan. A **plan-only** template (`schemaVersion` 1) holds no data and no org-specific Ids: objects and fields are referenced by API name, and Record Types by **DeveloperName**. That way the same template works against any pair of orgs.
+
+A template exported **with record data** (`*.seed-data.json`, `schemaVersion` 2) adds a `data` block with the captured records, so it can run with only a Target org connected. See [Record data](#record-data-data).
 
 ```json
 {
@@ -65,7 +67,8 @@ A template is a JSON file (`*.seed.json`) describing a seeding plan. It holds no
 | Key | Type | Notes |
 | --- | --- | --- |
 | `format` | string | Always `sf-sandbox-seeding-template`. Optional on import. |
-| `schemaVersion` | number | `1`. Templates from a newer version are rejected. |
+| `schemaVersion` | number | `1` (plan only) or `2` (has `data`). Templates from a newer version are rejected. |
+| `data` | object | Optional. Captured records; see below. |
 | `name`, `description` | string | Shown in the app. |
 | `settings` | object | See below. Missing keys fall back to defaults. |
 | `steps` | array | **Execution order** is the `order` value, or the array order if `order` is missing. |
@@ -99,7 +102,7 @@ A template is a JSON file (`*.seed.json`) describing a seeding plan. It holds no
 | `recordSource` | `query` \| `referenced` \| `both` | `query` = filters + LIMIT (default). `referenced` = exactly the records listed by `referencedBy`; filters and LIMIT are ignored, and the per-object cap still applies. `both` = the union. |
 | `referencedBy` | Ref[] | `{ "stepId": "opps", "field": "AccountId" }` adds the records that step's lookup points to (parents of what you picked). These are usually created by **Find related records**. With `stepId` equal to the step's own id, it follows a self-lookup such as `ParentId` up to 10 levels. |
 
-Extraction runs in dependency order: a step is read after the steps it is scoped to and the steps that reference it. Loops are rejected. Insertion runs in `order`, parents first.
+Extraction runs in dependency order: a step is read after the steps it is scoped to and the steps that reference it. Loops are rejected. Exception: when a step is scoped to a parent step through a lookup (`parentScopes`), and the parent also lists that same child and lookup in `referencedBy`, the pair is repaired on import. If the parent's `recordSource` is `referenced`, the child's scope is removed; otherwise the parent's redundant `referencedBy` entry is removed. Insertion runs in `order`, parents first.
 
 ## Filter
 
@@ -134,3 +137,31 @@ Managed-package record types are written `namespace__DeveloperName`.
 3. **Insert**: parents first, 200 records per call. `RecordTypeId` is replaced with the Target Id. Lookups to records inserted earlier are rewritten using the in-memory Source→Target Id map. Self-lookups such as `Account.ParentId` are inserted level by level.
 4. **Back-fill**: lookups whose parent was inserted later (cycles, or a child step placed before its optional parent) are set by a final update.
 5. **Unresolved lookups**: if the parent is not in the seed (or a user has no match), the lookup is left blank. If that lookup is required, the record is skipped and reported.
+
+## Record data (`data`)
+
+Present only in templates exported with **Plan + record data**. The insert uses these records instead of querying the Source org.
+
+```json
+"data": {
+  "format": "records-v1",
+  "capturedAt": "2026-11-05T10:00:00.000Z",
+  "source": { "orgId": "00D…", "orgName": "Acme Production", "isSandbox": false, "instanceUrl": "https://acme.my.salesforce.com", "username": "ada@acme.com" },
+  "total": 7,
+  "keyPrefixes": { "001": "Account", "003": "Contact", "005": "User" },
+  "objects": { "Account": { "name": "Account", "label": "Account", "labelPlural": "Accounts", "keyPrefix": "001", "fields": [ { "name": "Name", "type": "string", "createable": true, "nillable": false } ] } },
+  "users": { "005…": { "Username": "ada@acme.com", "Name": "Ada", "IsActive": true } },
+  "steps": { "accounts": { "records": [ { "Id": "001…", "Name": "Acme", "OwnerId": "005…", "RecordTypeId": null, "RecordType": null } ], "stats": {} } }
+}
+```
+
+| Key | Notes |
+| --- | --- |
+| `format` | Always `records-v1`. Unknown formats are dropped with a warning; the plan still imports. |
+| `source` | The org the records came from. Used for messages, the same-org check and sandbox-suffix detection when matching users. |
+| `keyPrefixes` | Id prefix → object for every lookup value in the records, so the app can tell a User Id from an Account Id. |
+| `objects` | Trimmed Source describes (field name, type, `referenceTo`, `createable`, `nillable`…) for each step's object. These decide which fields are inserted and how lookups are handled. |
+| `users` | Username of every User referenced by a lookup, for *Match users by Username*. |
+| `steps` | Keyed by step `id`. `records` are the Source records exactly as queried (minus the REST `attributes` blocks), including `RecordType.DeveloperName` and `NamespacePrefix`. Records whose `Id` is not a valid 15/18-character Id are ignored. |
+
+Steps without an entry insert nothing. The step fields (`filters`, `limit`, links…) are kept for reference and for capturing again. They are not re-applied to the captured records.

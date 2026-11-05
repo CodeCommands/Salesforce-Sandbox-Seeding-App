@@ -32,7 +32,7 @@ function networkError(err, transport, url) {
   }
   const hint = transport === 'direct'
     ? ` If this is the first call to this org, its CORS allowlist probably does not include ${window.location.origin} (Setup > CORS), or switch Transport to "Local proxy" in Settings.`
-    : ' Check that start.bat is still running and that this PC can reach Salesforce (corporate proxy / firewall).';
+    : ' Check that the start script (start.bat on Windows, start.command on macOS) is still running and that this computer can reach Salesforce (corporate proxy / firewall).';
   return new SfError(`Network error calling ${host}: ${err.message || err}.${hint}`, { status: 0, errorCode: 'NETWORK' });
 }
 

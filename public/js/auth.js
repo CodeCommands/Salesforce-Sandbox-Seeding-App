@@ -208,7 +208,7 @@ async function exchangeCode(pending, code, settings) {
     });
   } catch (e) {
     throw new Error(settings.transport === 'proxy'
-      ? `Token exchange failed (${e.message}). Check that start.bat is still running.`
+      ? `Token exchange failed (${e.message}). Check that the start script (start.bat or start.command) is still running.`
       : `Token exchange failed (${e.message}). With Direct transport, enable "Enable CORS for OAuth endpoints" in Setup > CORS, or switch Transport to "Local proxy".`);
   }
   const data = await res.json().catch(() => ({}));

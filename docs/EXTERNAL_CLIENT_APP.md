@@ -2,7 +2,7 @@
 
 Sandbox Seeder signs in with the **OAuth 2.0 Authorization Code flow with PKCE** (S256). No client secret is created, stored, or sent, and the older User-Agent (implicit) flow is not used.
 
-> **Port:** everything below assumes the default port `5050`. If you start the app with `start.bat 5051`, use `5051` instead, or register both callback URLs.
+> **Port:** everything below assumes the default port `5050`. If you start the app with `start.bat 5051` (Windows) or `./start.command 5051` (macOS), use `5051` instead, or register both callback URLs.
 
 ## 1. Create the External Client App
 
@@ -35,7 +35,7 @@ Finally, open **Settings** → **OAuth Settings** → **Consumer Key and Secret*
 A **Local** External Client App signs users in only to the org where it exists.
 
 * A **sandbox created or refreshed after** you created the app in production contains a copy of it. If that copy shows the same Consumer Key, one key in Settings covers both orgs.
-* If the sandbox copy has a **different** key, or the sandbox was created earlier, create the app there too (or refresh the sandbox). Enter that org's key on its card in the Connect tab, under **Advanced → Consumer Key for this org**.
+* If the sandbox copy has a **different** key, or the sandbox was created earlier, create the app there too (or refresh the sandbox). Enter that org's key in the **Consumer Key** box on its card in the Connect tab.
 
 The app remembers a per-org key in this browser, keyed by Source/Target.
 
@@ -43,12 +43,12 @@ The app remembers a per-org key in this browser, keyed by Source/Target.
 
 | Transport | What to configure in each org |
 | --- | --- |
-| **Local proxy** (default) | Nothing. The browser talks only to `server.ps1`, which relays calls (including the token exchange) to Salesforce. `start.bat` must stay open. |
+| **Local proxy** (default) | Nothing. The browser talks only to the local server (`server.ps1` on Windows, `server.pl` on macOS), which relays calls (including the token exchange) to Salesforce. The start script window must stay open. |
 | Direct | Setup → CORS → Allowed Origins List → New: `http://localhost:5050`, and tick **Enable CORS for OAuth endpoints**. Sandboxes copy this list from production on refresh. |
 
 ## 4. Configure the app
 
-Either paste the Consumer Key in **Settings** (⚙) (stored in this browser only), or put it in `public/config.json` for everyone who uses this copy:
+Paste the Consumer Key into the **Consumer Key** box on the org's card on the **Connect** tab (the first key you enter is also used for the other org), or into **Settings** (⚙). Both are stored in this browser only. To set it for everyone who uses this copy, put it in `public/config.json`:
 
 ```json
 { "clientId": "3MVG9...your consumer key..." }
@@ -68,8 +68,8 @@ Either paste the Consumer Key in **Settings** (⚙) (stored in this browser only
 | Error | Fix |
 | --- | --- |
 | `redirect_uri_mismatch` | The Callback URL must be exactly `http://localhost:<port>/oauth/callback.html`. |
-| `invalid_client_id` / `invalid_client` | Wrong key for this org: a Local app only works in its own org. Enter the org's key under *Advanced* on its Connect card. New apps can take a few minutes to activate. |
+| `invalid_client_id` / `invalid_client` | Wrong key for this org: a Local app only works in its own org. Enter the org's key in the **Consumer Key** box on its Connect card. New apps can take a few minutes to activate. |
 | `invalid_grant` | Untick *Require secret for Web Server Flow*. Also check that the code wasn't reused (start the login again). |
 | `invalid_request` mentioning code challenge | Enable *Require Proof Key for Code Exchange (PKCE)*. |
 | `OAUTH_APPROVAL_ERROR_GENERIC` / user not approved | Check *Permitted Users* and the assigned profiles / permission sets. |
-| "Token exchange failed" | Proxy: make sure `start.bat` is running. Direct: enable *Enable CORS for OAuth endpoints*. |
+| "Token exchange failed" | Proxy: make sure `start.bat` / `start.command` is running. Direct: enable *Enable CORS for OAuth endpoints*. |

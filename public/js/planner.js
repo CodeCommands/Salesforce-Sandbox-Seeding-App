@@ -112,3 +112,73 @@ export function extractionOrder(steps) {
   }
   return { order, cycle: null };
 }
+
+/**
+ * Links that make a step wait for another step during extraction.
+ * kind "scope": the step takes only children of the other step's records (step.field IN other's Ids).
+ * kind "reference": the step takes the records that the other step's records point to (other.field).
+ */
+export function extractionLinks(step) {
+  return [
+    ...(step.parentScopes || []).map((p) => ({ owner: step.id, kind: 'scope', other: p.stepId, field: p.field })),
+    ...(step.referencedBy || []).filter((r) => r.stepId !== step.id).map((r) => ({ owner: step.id, kind: 'reference', other: r.stepId, field: r.field })),
+  ];
+}
+
+/**
+ * Finds one loop of extraction links (e.g. Contact scoped to Account while Account takes the Accounts
+ * those Contacts point to). Returns null, or { stepIds, links } with the links that form the loop.
+ */
+export function findLoop(steps) {
+  const ids = new Set(steps.map((s) => s.id));
+  const out = new Map(steps.map((s) => [s.id, extractionLinks(s).filter((l) => ids.has(l.other))]));
+  const color = new Map(); // undefined = unvisited, 1 = on stack, 2 = done
+  const stack = [];
+  const visit = (id) => {
+    color.set(id, 1);
+    for (const link of out.get(id) || []) {
+      if (color.get(link.other) === 1) {
+        const start = stack.findIndex((l) => l.owner === link.other);
+        const links = [...(start >= 0 ? stack.slice(start) : []), link];
+        return { stepIds: links.map((l) => l.owner), links };
+      }
+      if (!color.has(link.other)) {
+        stack.push(link);
+        const found = visit(link.other);
+        if (found) return found;
+        stack.pop();
+      }
+    }
+    color.set(id, 2);
+    return null;
+  };
+  for (const s of steps) {
+    if (color.has(s.id)) continue;
+    const found = visit(s.id);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Plain-language sentence for one link, for the UI and validation messages. */
+export function describeLink(link, steps) {
+  const owner = steps.find((s) => s.id === link.owner);
+  const other = steps.find((s) => s.id === link.other);
+  const n = (s) => (s ? `step ${steps.indexOf(s) + 1}` : 'a missing step');
+  const o = owner ? owner.object : '?';
+  const p = other ? other.object : '?';
+  if (link.kind === 'scope') return `${o} (${n(owner)}) takes only the ${o} records that belong to the ${p} records in ${n(other)}, via ${link.field}`;
+  return `${o} (${n(owner)}) takes the ${o} records that the ${p} records in ${n(other)} point to, via ${link.field}`;
+}
+
+/** True when adding `link` ({ owner, kind, other, field }) would make extraction loop. */
+export function wouldLoop(steps, link) {
+  if (link.kind === 'reference' && link.owner === link.other) return false; // hierarchy is handled inside a step
+  const next = steps.map((s) => {
+    if (s.id !== link.owner) return s;
+    return link.kind === 'scope'
+      ? { ...s, parentScopes: [...(s.parentScopes || []), { field: link.field, stepId: link.other }] }
+      : { ...s, referencedBy: [...(s.referencedBy || []), { field: link.field, stepId: link.other }] };
+  });
+  return !!findLoop(next.filter((s) => s.enabled !== false));
+}

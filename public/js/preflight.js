@@ -4,7 +4,7 @@ import {
   fieldMap, getField, hasRecordTypes, isLookup, isRequiredOnCreate, qualifyRt, selectedSourceFields, isSeedableField,
 } from './schema.js';
 import { compileQuery, compileCountQuery, clampLimit } from './soql.js';
-import { dependencyEdges, checkOrder, extractionOrder } from './planner.js';
+import { dependencyEdges, checkOrder, findLoop, describeLink } from './planner.js';
 import { effectiveRecordSource } from './template.js';
 import { buildUserMap, referencedUserIds, resolveSuffixes } from './users.js';
 import { MAX_SOQL_GET_LENGTH } from './sfapi.js';
@@ -96,9 +96,12 @@ export async function staticPreflight(ctx, { withCounts = true } = {}) {
   const report = new Report();
   const { source, target, plan, appSettings, orgs } = ctx;
   const counts = new Map();
-  if (!source) report.error('Connect a Source org first.');
+  if (!source) report.error('Connect the Source org, or import a template that includes captured record data.');
   if (!target) report.error('Connect a Target org first.');
   if (!source || !target) return { report, counts, total: 0 };
+  // Captured data: the records already exist, so only Target-side and ordering checks apply.
+  const captured = !!source.isSnapshot;
+  if (captured) report.info('Using captured record data: the Source org is not queried.');
 
   if (orgs.target && orgs.target.IsSandbox === false) {
     if (appSettings.allowProductionTarget) report.warn(`Target "${orgs.target.Name}" is a PRODUCTION org. Production targets are enabled in Settings.`);
@@ -118,7 +121,7 @@ export async function staticPreflight(ctx, { withCounts = true } = {}) {
   const td = new Map();
   await Promise.all(steps.map(async (s) => {
     const [a, b] = await Promise.all([safeDescribe(source, s.object), safeDescribe(target, s.object)]);
-    if (a.error) report.error(`${s.object}: not available in the Source org (${a.error.message}).`, s.id);
+    if (a.error) report.error(captured ? `${s.object}: not part of the captured data. Connect the Source org, or disable this step.` : `${s.object}: not available in the Source org (${a.error.message}).`, s.id);
     else sd.set(s.id, a.describe);
     if (b.error) report.error(`${s.object}: not available in the Target org (${b.error.message}).`, s.id);
     else td.set(s.id, b.describe);
@@ -150,6 +153,8 @@ export async function staticPreflight(ctx, { withCounts = true } = {}) {
         report.warn(`${step.object}: Target requires ${missingRequired.map((f) => f.name).join(', ')}, which ${missingRequired.length === 1 ? 'is' : 'are'} not being copied. Inserts will fail unless a default or automation fills ${missingRequired.length === 1 ? 'it' : 'them'}.`, step.id);
       }
     }
+
+    if (captured) continue;
 
     // Query validity
     try {
@@ -198,8 +203,11 @@ export async function staticPreflight(ctx, { withCounts = true } = {}) {
     }
   }
 
-  const xo = extractionOrder(steps);
-  if (!xo.order) report.error(`These steps depend on each other in a loop through scopes / referenced-by links: ${xo.cycle.join(', ')}. Remove one of the links.`);
+  const loop = captured ? null : findLoop(steps);
+  if (loop) {
+    const objs = [...new Set(loop.stepIds.map((id) => (plan.steps.find((x) => x.id === id) || {}).object))];
+    report.error(`${objs.join(' and ')} wait for each other in a loop, so neither can be extracted first: ${loop.links.map((l) => describeLink(l, plan.steps)).join('; and ')}. Remove one of these links on the Build plan tab (it shows a Fix button).`, loop.stepIds[0]);
+  }
 
   // Ordering
   const edges = dependencyEdges(steps, (name) => source.peekDescribe(name));
@@ -215,6 +223,14 @@ export async function staticPreflight(ctx, { withCounts = true } = {}) {
       if (!sDesc) continue;
       const lim = clampLimit(step.limit, appSettings.maxRecordsPerObject);
       const recordSource = effectiveRecordSource(step);
+      if (captured) {
+        const data = source.snapshot.steps[step.id];
+        const n = data ? data.records.length : 0;
+        if (!data) report.warn(`${step.object}: no records were captured for this step (it was disabled or added after capture).`, step.id);
+        counts.set(step.id, { count: n, expected: n, scoped: false, referenced: false, captured: true, limit: lim });
+        total += n;
+        continue;
+      }
       if (recordSource === 'referenced') {
         counts.set(step.id, { count: null, expected: 0, scoped: false, referenced: true, limit: lim });
         continue;
@@ -233,7 +249,8 @@ export async function staticPreflight(ctx, { withCounts = true } = {}) {
       const vals = [...counts.values()];
       const scopedNote = vals.some((c) => c.scoped) ? ' (upper bound: scoped steps only take children of extracted parents)' : '';
       const refNote = vals.some((c) => c.referenced) ? ', plus the records other steps reference (known after extraction: use Dry run)' : '';
-      report.ok(`Preview: up to ${plural(total, 'record')} across ${plural(counts.size, 'object step')}${scopedNote}${refNote}.`);
+      if (captured) report.ok(`Captured data: ${plural(total, 'record')} across ${plural(counts.size, 'step')}.`);
+      else report.ok(`Preview: up to ${plural(total, 'record')} across ${plural(counts.size, 'object step')}${scopedNote}${refNote}.`);
     }
     const [tl, sl] = await Promise.all([safeLimits(target), safeLimits(source)]);
     capacityChecks(report, ctx, total, tl, sl, steps.length);
