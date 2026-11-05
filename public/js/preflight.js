@@ -104,8 +104,8 @@ export async function staticPreflight(ctx, { withCounts = true } = {}) {
   if (captured) report.info('Using captured record data: the Source org is not queried.');
 
   if (orgs.target && orgs.target.IsSandbox === false) {
-    if (appSettings.allowProductionTarget) report.warn(`Target "${orgs.target.Name}" is a PRODUCTION org. Production targets are enabled in Settings.`);
-    else report.error(`Target "${orgs.target.Name}" is a production org. This tool only seeds sandboxes; you can allow production targets in Settings if you really mean it.`);
+    if (appSettings.allowProductionTarget) report.warn(`Target "${orgs.target.Name}" is a PRODUCTION org. Production targets are allowed in public/config.json.`);
+    else report.error(`Target "${orgs.target.Name}" is a production org. This tool only seeds sandboxes.`);
   }
   if (orgs.source && orgs.target && orgs.source.Id === orgs.target.Id) {
     report.warn('Source and Target are the same org: every selected record will be duplicated.');
@@ -166,7 +166,7 @@ export async function staticPreflight(ctx, { withCounts = true } = {}) {
     }
     const lim = parseInt(step.limit, 10);
     if (!Number.isFinite(lim) || lim < 1) report.error(`${step.object}: LIMIT must be a positive number.`, step.id);
-    else if (lim > appSettings.maxRecordsPerObject) report.warn(`${step.object}: LIMIT ${fmtNum(lim)} will be capped at ${fmtNum(appSettings.maxRecordsPerObject)} (Settings > Max records per object).`, step.id);
+    else if (lim > appSettings.maxRecordsPerObject) report.warn(`${step.object}: LIMIT ${fmtNum(lim)} will be capped at ${fmtNum(appSettings.maxRecordsPerObject)} (the per-object maximum).`, step.id);
 
     // Record type filter values
     for (const flt of step.filters || []) {

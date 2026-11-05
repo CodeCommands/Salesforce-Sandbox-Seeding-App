@@ -14,7 +14,7 @@ Setup → **External Client App Manager** → **New External Client App**.
 | | Contact Email | your admin mailbox |
 | | Distribution State | **Local** |
 | API (Enable OAuth Settings) | Callback URL | `http://localhost:5050/oauth/callback.html` |
-| | OAuth Scopes | **Manage user data via APIs (api)**. Optional: **Manage user data via Web browsers (web)**, so **Open org** signs you in to Salesforce without the login page. When you add it, also enter `api web` in the app's **Settings → OAuth scopes** (or `"scopes": "api web"` in `public/config.json`) and reconnect. Ask for `web` only when every org's app allows it: requesting a scope the app does not allow makes sign-in fail with `invalid_scope`. |
+| | OAuth Scopes | **Manage user data via APIs (api)**. Nothing else is needed. |
 | | Flow Enablement | none of the optional flows (client credentials, device, JWT, token exchange) are needed |
 | | Security | ✅ **Require Proof Key for Code Exchange (PKCE) extension for Supported Authorization Flows** |
 | | | ☐ **Require secret for Web Server Flow** (must be off: the app has no secret) |
@@ -34,10 +34,10 @@ Finally, open **Settings** → **OAuth Settings** → **Consumer Key and Secret*
 
 A **Local** External Client App signs users in only to the org where it exists.
 
-* A **sandbox created or refreshed after** you created the app in production contains a copy of it. If that copy shows the same Consumer Key, one key in Settings covers both orgs.
-* If the sandbox copy has a **different** key, or the sandbox was created earlier, create the app there too (or refresh the sandbox). Enter that org's key in the **Consumer Key** box on its card in the Connect tab.
+* A **sandbox created or refreshed after** you created the app in production contains a copy of it, often with a **new Consumer Key**. Copy the key from the sandbox's own copy of the app.
+* If the sandbox was created earlier, create the app there too (or refresh the sandbox).
 
-The app remembers a per-org key in this browser, keyed by Source/Target.
+Each org is signed in with its own key. The app saves each org you connect (see below).
 
 ## 3. No CORS setup needed
 
@@ -45,11 +45,9 @@ The browser talks only to the local server that the start script runs (`server.p
 
 ## 4. Configure the app
 
-Paste the Consumer Key into the **Consumer Key** box on the org's card on the **Connect** tab (the first key you enter is also used for the other org), or into **Settings** (⚙), where it is the shared key for both orgs. Both are stored in this browser only. To set it for everyone who uses this copy, put it in `public/config.json`:
+There is no settings screen. On the **Connect** tab, each org card asks for the org's login (Production, Sandbox or My Domain URL; use the My Domain URL for SSO orgs) and its **Consumer Key**. After the first successful sign-in the org is **saved in this browser**: its My Domain and Consumer Key (never passwords or tokens). Next time, pick it in the card's **Org** list and click **Connect**; the app signs in through the org's My Domain, so SSO works directly.
 
-```json
-{ "clientId": "3MVG9...your consumer key..." }
-```
+After a **sandbox refresh** the My Domain stays the same but the Consumer Key can change. Pick the saved org, paste the new key into the **Consumer Key** box and connect: the saved org is updated once sign-in succeeds. **Forget this org** removes a saved org from this browser.
 
 ## How sign-in works
 
@@ -69,6 +67,7 @@ Paste the Consumer Key into the **Consumer Key** box on the org's card on the **
 | `invalid_grant` | Untick *Require secret for Web Server Flow*. Also check that the code wasn't reused (start the login again). |
 | `invalid_request` mentioning code challenge | Enable *Require Proof Key for Code Exchange (PKCE)*. |
 | `OAUTH_APPROVAL_ERROR_GENERIC` / user not approved | Check *Permitted Users* and the assigned profiles / permission sets. |
-| `invalid_scope` | Settings → OAuth scopes asks for a scope (usually `web`) that the External Client App does not allow. Add it to the app, or remove it from Settings. |
-| **Open org** shows the login page | The connection has no `web` scope, so no one-time sign-in link could be made. See *OAuth Scopes* above. |
+| `invalid_scope` | Add **Manage user data via APIs (api)** to the External Client App's OAuth scopes. |
+| `invalid_client_id` right after a sandbox refresh | The refreshed sandbox's app has a new Consumer Key. Pick the saved org, paste the new key and connect again. |
+| **Open org** shows the login page | The browser no longer has a Salesforce session for that org (for example it expired). Sign in there as usual; with SSO the identity provider signs you in. |
 | "Token exchange failed" | Make sure `start.bat` / `start.command` is still running. |

@@ -81,17 +81,17 @@ export function cancelLogin() {
 
 /**
  * Starts a login for `role`. Resolves with a session object once the callback page reports back.
- * @param opts { env, customDomain, clientId (optional per-org override), settings }
+ * @param opts { env, customDomain, clientId } clientId: the External Client App Consumer Key for this org
  */
-export async function login(role, { env, customDomain, clientId, settings }) {
-  const consumerKey = String(clientId || settings.clientId || '').trim();
-  if (!consumerKey) throw new Error('Set the External Client App Consumer Key in Settings (or for this org on the Connect tab) first.');
+export async function login(role, { env, customDomain, clientId, savedOrgId = null }) {
+  const consumerKey = String(clientId || '').trim();
+  if (!consumerKey) throw new Error('Paste the Consumer Key of the External Client App for this org first.');
   if (active) cancelLogin();
   const loginHost = normalizeLoginHost(env, customDomain);
   const state = `${role}.${randomString(16)}`;
   const verifier = randomString(48);
   const pending = {
-    state, role, loginHost, env, customDomain: customDomain || '', clientId: consumerKey, verifier, createdAt: Date.now(), mode: 'popup',
+    state, role, loginHost, env, customDomain: customDomain || '', clientId: consumerKey, savedOrgId, verifier, createdAt: Date.now(), mode: 'popup',
   };
 
   // Authorization Code + PKCE (S256). No client secret is ever used or stored.
@@ -100,7 +100,7 @@ export async function login(role, { env, customDomain, clientId, settings }) {
     client_id: consumerKey,
     redirect_uri: redirectUri(),
     state,
-    scope: settings.scopes || 'api',
+    scope: 'api',
     prompt: 'login', // two orgs, one browser: always show the login screen
     display: 'popup',
     code_challenge: await pkceChallenge(verifier),
@@ -129,7 +129,7 @@ export async function login(role, { env, customDomain, clientId, settings }) {
       const data = ev.data;
       if (!data || data.type !== CHANNEL || !data.params || data.params.state !== state) return;
       cleanup();
-      completeLogin(data.params, settings).then(resolve, reject);
+      completeLogin(data.params).then(resolve, reject);
     };
     const timer = setTimeout(() => {
       cleanup();
@@ -153,15 +153,15 @@ export async function login(role, { env, customDomain, clientId, settings }) {
 }
 
 /** Called on page load: finishes a login that used the full-page redirect fallback. */
-export async function consumeRedirectResult(settings) {
+export async function consumeRedirectResult() {
   const params = storage.get('sessionStorage', RESULT_KEY);
   if (!params) return null;
   storage.remove('sessionStorage', RESULT_KEY);
-  const session = await completeLogin(params, settings);
+  const session = await completeLogin(params);
   return session;
 }
 
-async function completeLogin(params, settings) {
+async function completeLogin(params) {
   const pending = storage.get('sessionStorage', PENDING_KEY);
   storage.remove('sessionStorage', PENDING_KEY);
   if (!pending || pending.state !== params.state) throw new Error('Login response did not match the request (state mismatch). Please try again.');
@@ -170,7 +170,7 @@ async function completeLogin(params, settings) {
     throw new Error(explainOAuthError(params.error, params.error_description));
   }
   if (!params.code) throw new Error('Salesforce did not return an authorization code');
-  const tokenData = await exchangeCode(pending, params.code, settings);
+  const tokenData = await exchangeCode(pending, params.code);
   if (!tokenData.access_token || !tokenData.instance_url) throw new Error('Salesforce did not return an access token');
   const idParts = String(tokenData.id || '').split('/');
   const session = {
@@ -185,13 +185,14 @@ async function completeLogin(params, settings) {
     env: pending.env,
     customDomain: pending.customDomain,
     clientId: pending.clientId,
-    scope: typeof tokenData.scope === 'string' ? tokenData.scope : null, // granted scopes, e.g. "api web"
+    savedOrgId: pending.savedOrgId || null, // saved org picked on the Connect card, if any
+    fresh: true, // not yet recorded in saved orgs (see connections.introspect)
   };
   saveSession(pending.role, session);
   return session;
 }
 
-async function exchangeCode(pending, code, settings) {
+async function exchangeCode(pending, code) {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code,
@@ -219,11 +220,12 @@ export function explainOAuthError(code, description) {
   const d = description ? `: ${description}` : '';
   const hints = {
     redirect_uri_mismatch: `The External Client App's Callback URL must be exactly ${redirectUri()}`,
-    invalid_client_id: 'Check the Consumer Key. A Local External Client App only works in the org where it exists; for other orgs enter that org\'s own key on the Connect tab. New apps can take a few minutes to become active.',
+    invalid_client_id: 'Check the Consumer Key: a Local External Client App only works in the org where it exists. If this sandbox was refreshed, its app may have a new Consumer Key: copy it from the app and paste it into the Consumer Key box, then connect again. New apps can take a few minutes to become active.',
+    invalid_client: 'Check the Consumer Key. If this sandbox was refreshed, its External Client App may have a new Consumer Key: paste it into the Consumer Key box and connect again.',
     access_denied: 'Login was cancelled or the app was not approved.',
     OAUTH_APPROVAL_ERROR_GENERIC: 'The org rejected the app. Check Permitted Users / IP Relaxation in the External Client App policies.',
     invalid_grant: 'The authorization code was rejected. In the External Client App, uncheck "Require secret for Web Server Flow" and keep PKCE required.',
-    invalid_scope: 'The External Client App does not allow every scope in Settings > OAuth scopes. Add the missing scope to the app (for "web": "Manage user data via Web browsers"), or remove it from Settings > OAuth scopes.',
+    invalid_scope: 'The External Client App must allow the OAuth scope "Manage user data via APIs (api)".',
     invalid_request: 'Make sure PKCE is enabled ("Require Proof Key for Code Exchange") on the External Client App.',
   };
   return `${code}${d}${hints[code] ? `. ${hints[code]}` : ''}`;

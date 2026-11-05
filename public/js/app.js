@@ -8,7 +8,7 @@ import { isBusy } from './runController.js';
 import { renderConnectView } from './ui/connectView.js';
 import { renderPlanView, refreshPlanParts } from './ui/planView.js';
 import { renderRunView } from './ui/runView.js';
-import { openSettings, openSetupGuide } from './ui/settingsModal.js';
+import { openSetupGuide } from './ui/setupGuide.js';
 import { openExportDialog } from './ui/exportDialog.js';
 import { toast, confirmModal, badge, openModal } from './ui/components.js';
 
@@ -87,11 +87,9 @@ function wireEvents() {
   on('plan:describe', () => { if (state.view === 'plan' && !refreshPlanParts('describe')) scheduleRender(); });
   on('plan:name', renderNav);
   on('run', () => { if (state.view === 'run') scheduleRender(); });
-  on('settings', scheduleRender);
   on('toast', ({ kind, text }) => toast(text, kind));
 
   for (const btn of document.querySelectorAll('[data-view]')) btn.addEventListener('click', () => go(btn.dataset.view));
-  document.getElementById('btn-settings').addEventListener('click', openSettings);
   document.getElementById('btn-help').addEventListener('click', openHelp);
   document.getElementById('btn-new').addEventListener('click', newTemplate);
   document.getElementById('btn-export').addEventListener('click', openExportDialog);

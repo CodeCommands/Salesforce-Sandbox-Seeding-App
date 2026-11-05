@@ -502,3 +502,6 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 15
 .count-rows dd { margin: 0; }
 .count-big { font-size: 1.15rem; font-weight: 650; }
 .template-id-row { padding: 8px 0 4px; overflow-wrap: anywhere; }
+.saved-org { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2, transparent); }
+.saved-org .link-btn { align-self: flex-start; margin-top: 4px; }
+.org-card a.btn { text-decoration: none; }

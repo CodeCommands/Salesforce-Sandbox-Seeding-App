@@ -1,87 +1,48 @@
-// Tab 1: connect Source and Target orgs.
+// Tab 1: connect Source and Target orgs. Orgs connected before are saved (My Domain + Consumer Key),
+// so later sessions only need "pick the org, sign in".
 import { h, fmtNum } from '../util.js';
-import { state, snapshotState } from '../store.js';
+import { state, snapshotState, emit } from '../store.js';
 import { snapshotSummary } from '../snapshot.js';
 import { ENVIRONMENTS } from '../auth.js';
-import { connect, disconnect, cancelConnect, getLoginPrefs } from '../connections.js';
-import { badge, toast, formRow, select } from './components.js';
-import { openSettings, openSetupGuide } from './settingsModal.js';
+import { connect, disconnect, cancelConnect } from '../connections.js';
+import { listSavedOrgs, getSavedOrg, lastUsed, forgetOrg, legacyPrefill } from '../savedOrgs.js';
+import { badge, toast, formRow, select, confirmModal } from './components.js';
+import { openSetupGuide } from './setupGuide.js';
 
 const ROLE_INFO = {
   source: { title: 'Source org', text: 'Where records are copied from. Read-only: this tool only queries it. Needed to build a plan and to read records.' },
   target: { title: 'Target org', text: 'The sandbox that receives the records.' },
 };
 
-const maskKey = (k) => (k.length > 12 ? `${k.slice(0, 6)}…${k.slice(-4)}` : k);
+const NEW = 'new';
+/** What each card's sign-in form shows; kept across re-renders so typed values are not lost. */
+const drafts = { source: null, target: null };
+
+function draftFor(role) {
+  if (drafts[role]) return drafts[role];
+  const saved = lastUsed(role) ? getSavedOrg(lastUsed(role)) : null;
+  if (saved) {
+    drafts[role] = { choice: saved.id, key: saved.clientId || '', env: 'custom', domain: saved.host };
+  } else {
+    const legacy = legacyPrefill(role);
+    drafts[role] = { choice: NEW, key: legacy.clientId, env: legacy.env || (role === 'source' ? 'production' : 'sandbox'), domain: legacy.customDomain };
+  }
+  return drafts[role];
+}
 
 export function renderConnectView(container) {
-  const needsClientId = !state.settings.clientId && !getLoginPrefs('source').clientId && !getLoginPrefs('target').clientId;
+  const firstTime = !listSavedOrgs().length && (state.conn.source.status !== 'connected' || state.conn.target.status !== 'connected');
   container.appendChild(h('section', { class: 'view connect-view' },
     h('div', { class: 'view-intro' },
       h('h1', null, 'Connect your orgs'),
       h('p', { class: 'muted' }, 'Sign in to both orgs with OAuth. Access tokens stay in this browser tab (sessionStorage) and are never written to disk.')),
-    needsClientId ? h('div', { class: 'callout callout-warning' },
-      h('strong', null, 'One-time setup needed. '),
-      'Paste the Consumer Key of your External Client App into the Consumer Key box on the org card below. The first key you enter is also used for the other org unless you enter a different one there. Each card has a setup guide button if the app does not exist yet.') : null,
+    firstTime ? h('div', { class: 'callout callout-warning' },
+      h('strong', null, 'First time here? '),
+      'Each org needs the Consumer Key of its External Client App: paste it on the org card and connect. The org is then saved, so next time you only pick it and sign in. Use the setup guide button on the card if the app does not exist yet.') : null,
     whichOrgsNote(),
     h('div', { class: 'org-grid' }, orgCard('source'), h('div', { class: 'org-arrow', 'aria-hidden': 'true' }, '→'), orgCard('target')),
     h('p', { class: 'muted small' },
-      'Sign-in: OAuth 2.0 + PKCE · API version: newest per org · Shared Consumer Key and safety limits: ',
-      h('button', { class: 'link-btn', onclick: openSettings }, 'Settings'))));
-}
-
-const SF_HOST = /^([a-z0-9-]+\.)*(salesforce\.com|force\.com|cloudforce\.com|salesforce\.mil|force\.mil|crmforce\.mil|sfcrmproducts\.cn|sfcrmapps\.cn|database\.com)$/i;
-const isSalesforceUrl = (u) => {
-  try {
-    const x = new URL(u);
-    return x.protocol === 'https:' && SF_HOST.test(x.hostname);
-  } catch {
-    return false;
-  }
-};
-const hasWebScope = (session) => !session.scope || /(^|\s)(web|full)(\s|$)/.test(session.scope);
-const scopeHelp = 'To skip the login page, add the OAuth scope "Manage user data via Web browsers (web)" to the External Client App, enter "api web" in Settings > OAuth scopes, then reconnect this org.';
-
-/**
- * Opens the org's UI in a new tab. With a token that has the "web" scope, Salesforce issues a one-time
- * sign-in link, so no login is needed. Otherwise the org's start page opens; the browser is usually still
- * signed in from connecting, else Salesforce shows its login page.
- */
-async function openOrg(role) {
-  const conn = state.conn[role];
-  // Open the tab now, while the click still counts as a user action, so pop-up blockers allow it.
-  const w = window.open('about:blank', '_blank');
-  if (!w) {
-    toast('The browser blocked the new tab. Allow pop-ups for this page and try again.', 'warning');
-    return;
-  }
-  try {
-    w.opener = null;
-    w.document.title = 'Opening Salesforce…';
-    w.document.body.textContent = 'Opening Salesforce…';
-  } catch { /* ignore */ }
-  const home = `${conn.session.instanceUrl}/`;
-  let url = home;
-  let note = '';
-  if (!hasWebScope(conn.session)) {
-    note = `Opened ${conn.org ? conn.org.Name : 'the org'}. If Salesforce asks you to log in: ${scopeHelp}`;
-  } else {
-    try {
-      const link = await conn.client.singleAccessUrl();
-      if (!isSalesforceUrl(link)) throw new Error('unexpected sign-in link');
-      url = link;
-    } catch (e) {
-      note = /scope/i.test(e.message || '')
-        ? `Opened ${conn.org ? conn.org.Name : 'the org'} without automatic sign-in. ${scopeHelp}`
-        : `Automatic sign-in failed (${e.message}), so the org's start page was opened instead.`;
-    }
-  }
-  try {
-    w.location.replace(url);
-  } catch {
-    window.open(url, '_blank', 'noopener');
-  }
-  if (note) toast(note, 'info', 12000);
+      'Sign-in: OAuth 2.0 + PKCE · API version: newest per org · Saved orgs keep only the My Domain and Consumer Key in this browser, never passwords or tokens.')));
 }
 
 /** Which connections the current plan needs. */
@@ -99,7 +60,6 @@ function whichOrgsNote() {
 function orgCard(role) {
   const conn = state.conn[role];
   const info = ROLE_INFO[role];
-  const prefs = getLoginPrefs(role);
   const card = h('article', { class: ['card', 'org-card', `org-${conn.status}`] });
 
   const header = h('div', { class: 'card-header' },
@@ -114,20 +74,20 @@ function orgCard(role) {
     card.appendChild(h('dl', { class: 'kv' },
       h('dt', null, 'Org'), h('dd', null, o.Name || '—', ' ', o.IsSandbox ? badge('Sandbox', 'info') : badge('Production', role === 'target' ? 'danger' : 'neutral')),
       h('dt', null, 'User'), h('dd', null, u.Username || u.Name || '—'),
-      h('dt', null, 'Instance'), h('dd', { class: 'mono small' }, conn.session.instanceUrl),
+      h('dt', null, 'My Domain'), h('dd', { class: 'mono small' }, conn.session.instanceUrl),
       h('dt', null, 'Org Id'), h('dd', { class: 'mono small' }, o.Id || conn.session.orgId),
       h('dt', null, 'API version'), h('dd', null, `v${conn.client.apiVersion}`),
       lim.DailyApiRequests ? [h('dt', null, 'API requests'), h('dd', null, `${fmtNum(lim.DailyApiRequests.Remaining)} of ${fmtNum(lim.DailyApiRequests.Max)} left today`)] : null,
       lim.DataStorageMB ? [h('dt', null, 'Data storage'), h('dd', null, `${fmtNum(lim.DataStorageMB.Remaining)} MB free of ${fmtNum(lim.DataStorageMB.Max)} MB`)] : null,
       h('dt', null, 'Record types'), h('dd', null, fmtNum(conn.rt ? conn.rt.rows.length : 0))));
-    if (role === 'target' && o.IsSandbox === false) {
-      card.appendChild(h('div', { class: 'callout callout-danger small' },
-        'This is a production org. Runs against it are blocked unless "Allow production target" is enabled in Settings.'));
+    if (role === 'target' && o.IsSandbox === false && !state.settings.allowProductionTarget) {
+      card.appendChild(h('div', { class: 'callout callout-danger small' }, 'This is a production org. This tool only seeds sandboxes, so runs against it are blocked.'));
     }
     card.appendChild(h('div', { class: 'card-actions' },
-      h('button', { class: 'btn btn-primary', onclick: () => openOrg(role), title: 'Opens Salesforce in a new tab, signed in as this user' }, 'Open org ↗'),
-      h('button', { class: 'btn', onclick: () => disconnect(role) }, 'Disconnect'),
-      h('button', { class: 'btn btn-ghost', onclick: () => startConnect(role, prefs) }, 'Switch org')));
+      // A plain link: the browser normally still has the Salesforce session from signing in (and with SSO,
+      // the identity provider signs you in again if needed), so no Salesforce-only MFA step is involved.
+      h('a', { class: 'btn btn-primary', href: `${conn.session.instanceUrl}/`, target: '_blank', rel: 'noopener noreferrer', title: 'Opens this org in a new browser tab' }, 'Open org ↗'),
+      h('button', { class: 'btn', onclick: () => { drafts[role] = null; disconnect(role); } }, 'Disconnect')));
     return card;
   }
 
@@ -142,43 +102,76 @@ function orgCard(role) {
     return card;
   }
 
-  // Disconnected / error / expired: login form
-  let env = prefs.env;
-  let domain = prefs.customDomain || '';
-  const domainInput = h('input', {
-    type: 'text', class: 'input', value: domain, placeholder: 'acme--uat.sandbox.my.salesforce.com', spellcheck: 'false',
-    oninput: (e) => { domain = e.target.value; },
-    onkeydown: (e) => { if (e.key === 'Enter') startConnect(role, { env, customDomain: domain, clientId: orgKey }); }, // eslint-disable-line no-use-before-define
-  });
-  const domainRow = formRow('My Domain URL', domainInput, 'Required when the org enforces My Domain login or SSO.');
-  domainRow.hidden = env !== 'custom';
-  const envSelect = select(Object.entries(ENVIRONMENTS).map(([value, e]) => ({ value, label: e.label })), env, (v) => {
-    env = v;
-    domainRow.hidden = v !== 'custom';
-  });
-  let orgKey = prefs.clientId || '';
-  const connectBtn = h('button', {
-    class: 'btn btn-primary',
-    onclick: () => startConnect(role, { env, customDomain: domain, clientId: orgKey }),
-  }, conn.status === 'expired' ? 'Reconnect' : `Connect ${role}`);
+  // Disconnected / error / expired: pick a saved org or enter a new one
+  const d = draftFor(role);
+  const saved = listSavedOrgs();
+  if (d.choice !== NEW && !saved.some((o) => o.id === d.choice)) d.choice = NEW;
+  const pick = d.choice === NEW ? null : saved.find((o) => o.id === d.choice);
+  const rerender = () => emit('connections');
+  const go = () => startConnect(role, pick
+    ? { env: 'custom', customDomain: pick.host, clientId: d.key, savedOrgId: pick.id }
+    : { env: d.env, customDomain: d.domain, clientId: d.key });
+
+  const rows = [];
+  if (saved.length) {
+    rows.push(formRow('Org', select([
+      ...saved.map((o) => ({ value: o.id, label: `${o.name} · ${o.host}${o.isSandbox ? '' : ' (production)'}` })),
+      { value: NEW, label: '+ Another org…' },
+    ], d.choice, (v) => {
+      d.choice = v;
+      const o = v === NEW ? null : getSavedOrg(v);
+      d.key = o ? o.clientId || '' : '';
+      if (!o) { d.env = role === 'source' ? 'production' : 'sandbox'; d.domain = ''; }
+      rerender();
+    }), pick ? null : 'Orgs you connected before are listed here.'));
+  }
+  if (pick) {
+    rows.push(h('div', { class: 'saved-org small' },
+      h('div', null, h('span', { class: 'muted' }, 'My Domain '), h('span', { class: 'mono' }, pick.host)),
+      pick.username ? h('div', null, h('span', { class: 'muted' }, 'Last signed in as '), pick.username) : null,
+      h('button', {
+        class: 'link-btn',
+        onclick: async () => {
+          const ok = await confirmModal({ title: `Forget ${pick.name}?`, message: 'Its My Domain and Consumer Key are removed from this browser. You can add it again any time.', confirmLabel: 'Forget org' });
+          if (!ok) return;
+          forgetOrg(pick.id);
+          drafts.source = drafts.source && drafts.source.choice === pick.id ? null : drafts.source;
+          drafts.target = drafts.target && drafts.target.choice === pick.id ? null : drafts.target;
+          rerender();
+        },
+      }, 'Forget this org')));
+  } else {
+    const domainInput = h('input', {
+      type: 'text', class: 'input', value: d.domain, placeholder: 'acme--uat.sandbox.my.salesforce.com', spellcheck: 'false',
+      oninput: (e) => { d.domain = e.target.value; },
+      onkeydown: (e) => { if (e.key === 'Enter') go(); },
+    });
+    const domainRow = formRow('My Domain URL', domainInput, 'Use this for SSO orgs and orgs that require My Domain login.');
+    domainRow.hidden = d.env !== 'custom';
+    rows.push(formRow('Login environment', select(Object.entries(ENVIRONMENTS).map(([value, e]) => ({ value, label: e.label })), d.env, (v) => {
+      d.env = v;
+      domainRow.hidden = v !== 'custom';
+    })), domainRow);
+  }
+
+  const connectBtn = h('button', { class: 'btn btn-primary', onclick: go }, conn.status === 'expired' ? 'Reconnect' : `Connect ${role}`);
   const syncBtn = () => {
-    const has = !!(orgKey.trim() || state.settings.clientId);
-    connectBtn.disabled = !has;
-    connectBtn.title = has ? '' : 'Paste the Consumer Key first';
+    connectBtn.disabled = !d.key.trim();
+    connectBtn.title = d.key.trim() ? '' : 'Paste the Consumer Key first';
   };
-  const shared = state.settings.clientId;
   const keyInput = h('input', {
-    type: 'text', class: 'input mono', value: orgKey, spellcheck: 'false', autocomplete: 'off',
-    placeholder: shared ? `Leave blank to use ${maskKey(shared)}` : 'Paste the Consumer Key (starts with 3MVG9…)',
+    type: 'text', class: 'input mono', value: d.key, spellcheck: 'false', autocomplete: 'off',
+    placeholder: 'Paste the Consumer Key (starts with 3MVG9…)',
     'aria-label': `Consumer Key for the ${info.title}`,
-    oninput: (e) => { orgKey = e.target.value; syncBtn(); },
+    oninput: (e) => { d.key = e.target.value; syncBtn(); },
+    onkeydown: (e) => { if (e.key === 'Enter' && d.key.trim()) go(); },
   });
   syncBtn();
-  const keyHint = shared
-    ? `Blank uses the shared key ${maskKey(shared)} (from Settings or the first org you connected). Enter a different key only if this org has its own External Client App.`
-    : 'From your External Client App: Settings > OAuth Settings > Consumer Key and Secret. No secret is needed.';
+  const keyHint = pick
+    ? 'Saved for this org. After a sandbox refresh the key can change: if sign-in fails, paste the new key from the org\'s External Client App. It is saved once you are connected.'
+    : 'From the org\'s External Client App: Settings > OAuth Settings > Consumer Key and Secret. No secret is needed. Saved with the org once you are connected.';
   if (conn.error) card.appendChild(h('div', { class: 'callout callout-danger small', role: 'alert' }, conn.error));
-  card.appendChild(h('div', { class: 'form-stack' }, formRow('Login environment', envSelect), domainRow,
+  card.appendChild(h('div', { class: 'form-stack' }, ...rows,
     h('div', { class: 'key-block' },
       formRow('Consumer Key', keyInput, keyHint),
       h('button', { class: 'btn btn-small guide-btn', type: 'button', onclick: openSetupGuide }, 'External Client App Setup Guide'))));
@@ -197,9 +190,10 @@ function statusBadge(conn) {
   }
 }
 
-async function startConnect(role, { env, customDomain, clientId }) {
+async function startConnect(role, { env, customDomain, clientId, savedOrgId = null }) {
   try {
-    const conn = await connect(role, { env, customDomain, clientId });
+    const conn = await connect(role, { env, customDomain, clientId, savedOrgId });
+    if (conn.status === 'connected') drafts[role] = null; // next time: start from the saved org
     if (conn.status === 'connected') toast(`${ROLE_INFO[role].title} connected: ${conn.org ? conn.org.Name : ''}`, 'success');
     else if (conn.error) toast(conn.error, 'error');
   } catch (e) {

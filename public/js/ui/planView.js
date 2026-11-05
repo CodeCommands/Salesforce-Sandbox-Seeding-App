@@ -487,7 +487,7 @@ function recordsSection(step, describe) {
     formRow('LIMIT (required)', h('input', {
       class: 'input input-narrow', type: 'number', min: 1, max, value: step.limit,
       oninput: (e) => { step.limit = parseInt(e.target.value, 10) || 0; planChanged({ render: false }); },
-    }), `${links.some((l) => l.kind === 'scope') ? 'Applies after the link above. ' : ''}Max ${fmtNum(max)} per object (Settings).`),
+    }), `${links.some((l) => l.kind === 'scope') ? 'Applies after the link above. ' : ''}Max ${fmtNum(max)} per object.`),
     formRow('Order by', select([{ value: '', label: '— none —' }, ...sortable.map((f) => ({ value: f.name, label: `${f.label} (${f.name})` }))], ob.field, (v) => {
       step.orderBy = { field: v, direction: ob.direction || 'ASC' };
       planChanged();
@@ -505,7 +505,7 @@ function recordsSection(step, describe) {
       h('span', { class: 'small' }, 'Take:'),
       radio('referenced', `only the linked ${label}`),
       radio('both', `linked ${label} plus ${label} matching filters`)) : null,
-    mode === 'referenced' ? h('p', { class: 'muted small' }, `Takes exactly the ${label} the linked steps point to, so filters and LIMIT are not needed (the per-object cap in Settings still applies).`) : null,
+    mode === 'referenced' ? h('p', { class: 'muted small' }, `Takes exactly the ${label} the linked steps point to, so filters and LIMIT are not needed (the cap of ${fmtNum(state.settings.maxRecordsPerObject)} per object still applies).`) : null,
     limitRow,
     h('div', { class: 'inline-actions related-cta' },
       h('button', { class: 'btn btn-small', onclick: () => openRelatedDialog() }, 'Find related records…'),

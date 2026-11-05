@@ -1,49 +1,34 @@
-// Application settings: defaults < public/config.json < per-browser overrides (localStorage).
-import { storage } from './util.js';
-
-const SETTINGS_KEY = 'sfseed.settings';
+// Safety limits: built-in defaults, optionally overridden for every user of this copy in public/config.json.
+// There is no settings screen; per-org sign-in details live in saved orgs (savedOrgs.js).
 
 // Used only if an org's /services/data/ version list cannot be read; otherwise the latest is detected per org.
 export const FALLBACK_API_VERSION = '68.0';
 
 export const DEFAULT_SETTINGS = Object.freeze({
-  clientId: '', // External Client App consumer key (used for every org unless overridden on the Connect tab)
-  scopes: 'api',
   maxRecordsPerObject: 10000, // hard ceiling for any step LIMIT
   warnTotalRecords: 5000, // global warning threshold for one run
   estimatedKbPerRecord: 2, // Salesforce counts most records as 2 KB of data storage
   allowProductionTarget: false,
 });
 
-let fileConfig = {};
-
 export async function loadConfig() {
+  let fileConfig = {};
   try {
     const res = await fetch('config.json', { cache: 'no-store' });
     if (res.ok) fileConfig = await res.json();
   } catch {
     fileConfig = {};
   }
-  return getSettings();
+  return settingsFrom(fileConfig);
 }
 
-export function getSettings() {
-  const overrides = storage.get('localStorage', SETTINGS_KEY, {}) || {};
-  const merged = { ...DEFAULT_SETTINGS, ...pickKnown(fileConfig), ...pickKnown(overrides) };
+export function settingsFrom(fileConfig) {
+  const merged = { ...DEFAULT_SETTINGS, ...pickKnown(fileConfig) };
   merged.maxRecordsPerObject = clampInt(merged.maxRecordsPerObject, 1, 50000, DEFAULT_SETTINGS.maxRecordsPerObject);
   merged.warnTotalRecords = clampInt(merged.warnTotalRecords, 1, 1000000, DEFAULT_SETTINGS.warnTotalRecords);
+  merged.estimatedKbPerRecord = Math.max(1, parseFloat(merged.estimatedKbPerRecord) || DEFAULT_SETTINGS.estimatedKbPerRecord);
+  merged.allowProductionTarget = merged.allowProductionTarget === true;
   return merged;
-}
-
-export function saveSettings(partial) {
-  const current = storage.get('localStorage', SETTINGS_KEY, {}) || {};
-  storage.set('localStorage', SETTINGS_KEY, pickKnown({ ...current, ...partial }));
-  return getSettings();
-}
-
-export function resetSettings() {
-  storage.remove('localStorage', SETTINGS_KEY);
-  return getSettings();
 }
 
 export function redirectUri() {

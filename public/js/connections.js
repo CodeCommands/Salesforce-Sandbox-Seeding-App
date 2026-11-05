@@ -1,24 +1,11 @@
 // Source/Target org connections: login, restore from sessionStorage, org introspection.
 import { state, emit, emptyConnection } from './store.js';
 import { SfClient, SfError } from './sfapi.js';
-import { login, getSession, clearSession, consumeRedirectResult, cancelLogin, ROLES } from './auth.js';
+import { login, getSession, saveSession, clearSession, consumeRedirectResult, cancelLogin, ROLES } from './auth.js';
 import { RecordTypeIndex, RT_SOQL, isSeedableObject, keyPrefixMap } from './schema.js';
 import { quote } from './soql.js';
-import { storage } from './util.js';
-import { FALLBACK_API_VERSION, latestApiVersion, saveSettings } from './config.js';
-
-const PREFS_KEY = 'sfseed.loginPrefs';
-
-export function getLoginPrefs(role) {
-  const all = storage.get('localStorage', PREFS_KEY, {}) || {};
-  return { env: role === 'source' ? 'production' : 'sandbox', customDomain: '', clientId: '', ...(all[role] || {}) };
-}
-
-export function saveLoginPrefs(role, prefs) {
-  const all = storage.get('localStorage', PREFS_KEY, {}) || {};
-  all[role] = prefs;
-  storage.set('localStorage', PREFS_KEY, all);
-}
+import { FALLBACK_API_VERSION, latestApiVersion } from './config.js';
+import { rememberOrg, lastUsed, dropLegacySettings } from './savedOrgs.js';
 
 function buildClient(role, session) {
   return new SfClient({
@@ -68,6 +55,13 @@ async function introspect(role, session) {
     conn.rt = new RecordTypeIndex(rtRows);
     conn.limits = await client.limits().catch(() => null);
     conn.status = 'connected';
+    if (session.fresh) {
+      // First load after signing in (pop-up or redirect): save the org's sign-in details for next time.
+      rememberOrg(role, { id: session.savedOrgId, instanceUrl: session.instanceUrl, clientId: session.clientId, org: conn.org, user: conn.user });
+      if (lastUsed('source') && lastUsed('target')) dropLegacySettings();
+      delete session.fresh;
+      saveSession(role, session);
+    }
   } catch (e) {
     conn.status = 'error';
     conn.error = e instanceof SfError || e instanceof Error ? e.message : String(e);
@@ -77,21 +71,17 @@ async function introspect(role, session) {
   return conn;
 }
 
-export async function connect(role, { env, customDomain, clientId = '' }) {
-  const key = String(clientId || '').trim();
-  if (key && !state.settings.clientId) {
-    // The first key entered becomes the shared default, so the other org's card can be left blank.
-    state.settings = saveSettings({ clientId: key });
-    saveLoginPrefs(role, { env, customDomain, clientId: '' });
-  } else {
-    saveLoginPrefs(role, { env, customDomain, clientId: key === state.settings.clientId ? '' : key });
-  }
+/**
+ * Signs in to an org and loads it. `savedOrgId` is the saved org the user picked (if any); after a
+ * successful sign-in the org's My Domain and Consumer Key are saved (or updated) for next time.
+ */
+export async function connect(role, { env, customDomain, clientId = '', savedOrgId = null }) {
   const conn = state.conn[role];
   conn.status = 'authorizing';
   conn.error = null;
   emit('connections');
   try {
-    const session = await login(role, { env, customDomain, clientId, settings: state.settings });
+    const session = await login(role, { env, customDomain, clientId, savedOrgId });
     return await introspect(role, session);
   } catch (e) {
     if (conn.status === 'authorizing') conn.status = conn.session ? 'connected' : 'disconnected';
@@ -119,7 +109,7 @@ export function disconnect(role) {
 /** On startup: finish a redirect-mode login, then restore sessions kept in sessionStorage. */
 export async function restoreConnections() {
   try {
-    const s = await consumeRedirectResult(state.settings);
+    const s = await consumeRedirectResult();
     if (s) emit('toast', { kind: 'success', text: `Signed in to ${s.role} org` });
   } catch (e) {
     emit('toast', { kind: 'error', text: e.message });

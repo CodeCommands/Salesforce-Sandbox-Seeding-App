@@ -18,7 +18,7 @@ A local web app for seeding Salesforce sandboxes with realistic, connected data.
 2. Start the local server. A console window opens and your browser opens `http://localhost:5050/`. Keep the window open; press `Ctrl+C` to stop.
    * **Windows:** double-click **`start.bat`**.
    * **macOS:** double-click **`start.command`**.
-3. On the **Connect** tab, paste the Consumer Key into the **Consumer Key** box on the org card. The first key you enter is used for the other org too, unless you enter a different one there. Each card has an **External Client App Setup Guide** button.
+3. On the **Connect** tab, paste each org's Consumer Key into the **Consumer Key** box on its card and connect. The org is saved in this browser, so next time you only pick it and sign in. Each card has an **External Client App Setup Guide** button.
 4. **Connect** the Source org and the Target sandbox.
 5. **Build plan:** click **+ Add object**. The app asks how each new object's records are chosen (for example *"Contacts that belong to the Accounts in step 1"*). Then set filters and limits, and click **Find related records…** to pull in the records the lookups point to.
 6. **Validate & run:** *Validate* → *Dry run* → *Run seeding*.
@@ -50,7 +50,12 @@ Every Salesforce call, including sign-in, goes from the browser to the local ser
 
 ### 1. Connect
 
-Pick *Production*, *Sandbox* or a *Custom domain* (My Domain, required for SSO orgs) for each side. Sign-in happens in a pop-up. If pop-ups are blocked, the app falls back to a full-page redirect, and your plan draft is kept. The **Consumer Key** box is always on the card. Leave it blank to use the shared key (from Settings, or the first key you entered). Enter a key only if that org has its own External Client App with a different key. **External Client App Setup Guide** under the box explains how to create the app. Each connected card shows the API version in use, and **Open org ↗** opens that org in a new tab, signed in as the connected user. Without the optional `web` scope (see [docs/EXTERNAL_CLIENT_APP.md](docs/EXTERNAL_CLIENT_APP.md)) it opens the org's start page instead; the browser is usually still signed in from connecting, otherwise Salesforce shows its login page.
+There is no settings screen: everything is on the org cards.
+
+* **First time for an org:** pick *Production*, *Sandbox* or a *Custom domain* (My Domain, use it for SSO orgs), paste the org's **Consumer Key** and click **Connect**. Sign-in happens in a pop-up. If pop-ups are blocked, the app falls back to a full-page redirect, and your plan draft is kept. **External Client App Setup Guide** under the key explains how to create the app.
+* **Saved orgs:** after a successful sign-in the org is saved in this browser (My Domain and Consumer Key only, never passwords or tokens). Next time, pick it in the card's **Org** list; the key is filled in, and sign-in goes straight to the org's My Domain (and your SSO). **+ Another org…** adds a new one; **Forget this org** removes one.
+* **After a sandbox refresh** the My Domain stays the same but the Consumer Key can change. If sign-in fails with `invalid_client_id`, paste the new key into the box and connect again; the saved org is updated.
+* Each connected card shows the API version in use. **Open org ↗** opens the org in a new tab. The browser normally still has the Salesforce session from signing in, so no extra login is needed; if it expired, you sign in as usual (with SSO, through your identity provider).
 
 ### 2. Build the plan
 
@@ -71,7 +76,7 @@ Pick *Production*, *Sandbox* or a *Custom domain* (My Domain, required for SSO o
 
   After adding, the app scans again automatically, so chains are followed until every lookup is covered. Adding is always optional, and lookups to users and setup objects (profiles, queues, record types) are not listed.
 * **Fields:** *All insertable fields* (portable across orgs) or a hand-picked list. Formula, system and audit fields are never copied.
-* **LIMIT** is required for every object and capped by *Settings → Max records per object*.
+* **LIMIT** is required for every object and capped at 10,000 per object (adjustable for everyone in `public/config.json`).
 * **Template settings:** *Match users by Username* (on by default), *Keep Ids as-is for lookups to* (for objects whose Ids are identical in both orgs), and the duplicate-rule and assignment-rule headers.
 
 The plan auto-saves in this browser. **Import** loads a template (or drop the file on the page). A sample is in [public/templates/](public/templates/).
@@ -156,12 +161,13 @@ start.command             macOS entry point (double-click): launches server.pl
 server.pl                 macOS: static server + Salesforce relay via the built-in curl (Perl core modules only)
 public/
   index.html              Single-page app shell
-  config.json             Defaults for every user of this copy (clientId, scopes, limits)
+  config.json             Safety limits for every user of this copy (max records per object, warning threshold, production targets)
   oauth/callback.html     OAuth redirect target
   css/app.css
   js/
     app.js                Bootstrap, routing, import/export
     auth.js               OAuth 2.0 Authorization Code + PKCE, session storage
+    savedOrgs.js          Saved orgs (My Domain + Consumer Key per org) for the Connect cards
     sfapi.js              REST client (query, describe, limits, sObject Collections)
     soql.js               Filter builder → SOQL compiler
     schema.js             Describe helpers, Record Type index
@@ -174,7 +180,7 @@ public/
     template.js           Template schema, import/export
     runController.js      Run orchestration, logs, downloads, record counts
     runHistory.js         Seeded-records history (created Ids per run, by Template ID and Target org)
-    ui/                   Views (connect, plan, run), dialogs (add object, export, related records), components
+    ui/                   Views (connect, plan, run), dialogs (add object, export, related records, setup guide), components
   templates/              Sample templates
 docs/
   EXTERNAL_CLIENT_APP.md  External Client App (PKCE) and org settings
