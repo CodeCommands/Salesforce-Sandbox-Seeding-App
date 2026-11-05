@@ -124,6 +124,18 @@ export class SfClient {
     }
   }
 
+  /**
+   * One-time sign-in link for the Salesforce UI (frontdoor.jsp with a single-use code). Needs a token
+   * with the "web" or "full" scope; otherwise Salesforce answers with an invalid scope error.
+   */
+  async singleAccessUrl({ signal } = {}) {
+    const data = await this.request('POST', '/services/oauth2/singleaccess', {
+      body: '', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal,
+    });
+    if (!data || typeof data.frontdoor_uri !== 'string') throw new SfError('Salesforce did not return a sign-in link', { errorCode: 'NO_FRONTDOOR' });
+    return data.frontdoor_uri;
+  }
+
   // ---------- Query ----------
   query(soql, { signal } = {}) {
     return this.request('GET', `${this.dataPath}/query?q=${encodeURIComponent(soql)}`, { signal });

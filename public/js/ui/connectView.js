@@ -30,6 +30,60 @@ export function renderConnectView(container) {
       h('button', { class: 'link-btn', onclick: openSettings }, 'Settings'))));
 }
 
+const SF_HOST = /^([a-z0-9-]+\.)*(salesforce\.com|force\.com|cloudforce\.com|salesforce\.mil|force\.mil|crmforce\.mil|sfcrmproducts\.cn|sfcrmapps\.cn|database\.com)$/i;
+const isSalesforceUrl = (u) => {
+  try {
+    const x = new URL(u);
+    return x.protocol === 'https:' && SF_HOST.test(x.hostname);
+  } catch {
+    return false;
+  }
+};
+const hasWebScope = (session) => !session.scope || /(^|\s)(web|full)(\s|$)/.test(session.scope);
+const scopeHelp = 'To skip the login page, add the OAuth scope "Manage user data via Web browsers (web)" to the External Client App, enter "api web" in Settings > OAuth scopes, then reconnect this org.';
+
+/**
+ * Opens the org's UI in a new tab. With a token that has the "web" scope, Salesforce issues a one-time
+ * sign-in link, so no login is needed. Otherwise the org's start page opens; the browser is usually still
+ * signed in from connecting, else Salesforce shows its login page.
+ */
+async function openOrg(role) {
+  const conn = state.conn[role];
+  // Open the tab now, while the click still counts as a user action, so pop-up blockers allow it.
+  const w = window.open('about:blank', '_blank');
+  if (!w) {
+    toast('The browser blocked the new tab. Allow pop-ups for this page and try again.', 'warning');
+    return;
+  }
+  try {
+    w.opener = null;
+    w.document.title = 'Opening Salesforce…';
+    w.document.body.textContent = 'Opening Salesforce…';
+  } catch { /* ignore */ }
+  const home = `${conn.session.instanceUrl}/`;
+  let url = home;
+  let note = '';
+  if (!hasWebScope(conn.session)) {
+    note = `Opened ${conn.org ? conn.org.Name : 'the org'}. If Salesforce asks you to log in: ${scopeHelp}`;
+  } else {
+    try {
+      const link = await conn.client.singleAccessUrl();
+      if (!isSalesforceUrl(link)) throw new Error('unexpected sign-in link');
+      url = link;
+    } catch (e) {
+      note = /scope/i.test(e.message || '')
+        ? `Opened ${conn.org ? conn.org.Name : 'the org'} without automatic sign-in. ${scopeHelp}`
+        : `Automatic sign-in failed (${e.message}), so the org's start page was opened instead.`;
+    }
+  }
+  try {
+    w.location.replace(url);
+  } catch {
+    window.open(url, '_blank', 'noopener');
+  }
+  if (note) toast(note, 'info', 12000);
+}
+
 /** Which connections the current plan needs. */
 function whichOrgsNote() {
   const { snap, usable } = snapshotState();
@@ -71,6 +125,7 @@ function orgCard(role) {
         'This is a production org. Runs against it are blocked unless "Allow production target" is enabled in Settings.'));
     }
     card.appendChild(h('div', { class: 'card-actions' },
+      h('button', { class: 'btn btn-primary', onclick: () => openOrg(role), title: 'Opens Salesforce in a new tab, signed in as this user' }, 'Open org ↗'),
       h('button', { class: 'btn', onclick: () => disconnect(role) }, 'Disconnect'),
       h('button', { class: 'btn btn-ghost', onclick: () => startConnect(role, prefs) }, 'Switch org')));
     return card;

@@ -185,6 +185,7 @@ async function completeLogin(params, settings) {
     env: pending.env,
     customDomain: pending.customDomain,
     clientId: pending.clientId,
+    scope: typeof tokenData.scope === 'string' ? tokenData.scope : null, // granted scopes, e.g. "api web"
   };
   saveSession(pending.role, session);
   return session;
@@ -222,6 +223,7 @@ export function explainOAuthError(code, description) {
     access_denied: 'Login was cancelled or the app was not approved.',
     OAUTH_APPROVAL_ERROR_GENERIC: 'The org rejected the app. Check Permitted Users / IP Relaxation in the External Client App policies.',
     invalid_grant: 'The authorization code was rejected. In the External Client App, uncheck "Require secret for Web Server Flow" and keep PKCE required.',
+    invalid_scope: 'The External Client App does not allow every scope in Settings > OAuth scopes. Add the missing scope to the app (for "web": "Manage user data via Web browsers"), or remove it from Settings > OAuth scopes.',
     invalid_request: 'Make sure PKCE is enabled ("Require Proof Key for Code Exchange") on the External Client App.',
   };
   return `${code}${d}${hints[code] ? `. ${hints[code]}` : ''}`;

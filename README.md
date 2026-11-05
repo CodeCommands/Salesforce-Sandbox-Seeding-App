@@ -50,7 +50,7 @@ Every Salesforce call, including sign-in, goes from the browser to the local ser
 
 ### 1. Connect
 
-Pick *Production*, *Sandbox* or a *Custom domain* (My Domain, required for SSO orgs) for each side. Sign-in happens in a pop-up. If pop-ups are blocked, the app falls back to a full-page redirect, and your plan draft is kept. The **Consumer Key** box is always on the card. Leave it blank to use the shared key (from Settings, or the first key you entered). Enter a key only if that org has its own External Client App with a different key. **External Client App Setup Guide** under the box explains how to create the app. Each connected card shows the API version in use.
+Pick *Production*, *Sandbox* or a *Custom domain* (My Domain, required for SSO orgs) for each side. Sign-in happens in a pop-up. If pop-ups are blocked, the app falls back to a full-page redirect, and your plan draft is kept. The **Consumer Key** box is always on the card. Leave it blank to use the shared key (from Settings, or the first key you entered). Enter a key only if that org has its own External Client App with a different key. **External Client App Setup Guide** under the box explains how to create the app. Each connected card shows the API version in use, and **Open org ↗** opens that org in a new tab, signed in as the connected user. Without the optional `web` scope (see [docs/EXTERNAL_CLIENT_APP.md](docs/EXTERNAL_CLIENT_APP.md)) it opens the org's start page instead; the browser is usually still signed in from connecting, otherwise Salesforce shows its login page.
 
 ### 2. Build the plan
 

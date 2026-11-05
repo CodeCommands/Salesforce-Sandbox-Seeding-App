@@ -14,7 +14,7 @@ Setup → **External Client App Manager** → **New External Client App**.
 | | Contact Email | your admin mailbox |
 | | Distribution State | **Local** |
 | API (Enable OAuth Settings) | Callback URL | `http://localhost:5050/oauth/callback.html` |
-| | OAuth Scopes | **Manage user data via APIs (api)**. Nothing else is needed. |
+| | OAuth Scopes | **Manage user data via APIs (api)**. Optional: **Manage user data via Web browsers (web)**, so **Open org** signs you in to Salesforce without the login page. When you add it, also enter `api web` in the app's **Settings → OAuth scopes** (or `"scopes": "api web"` in `public/config.json`) and reconnect. Ask for `web` only when every org's app allows it: requesting a scope the app does not allow makes sign-in fail with `invalid_scope`. |
 | | Flow Enablement | none of the optional flows (client credentials, device, JWT, token exchange) are needed |
 | | Security | ✅ **Require Proof Key for Code Exchange (PKCE) extension for Supported Authorization Flows** |
 | | | ☐ **Require secret for Web Server Flow** (must be off: the app has no secret) |
@@ -69,4 +69,6 @@ Paste the Consumer Key into the **Consumer Key** box on the org's card on the **
 | `invalid_grant` | Untick *Require secret for Web Server Flow*. Also check that the code wasn't reused (start the login again). |
 | `invalid_request` mentioning code challenge | Enable *Require Proof Key for Code Exchange (PKCE)*. |
 | `OAUTH_APPROVAL_ERROR_GENERIC` / user not approved | Check *Permitted Users* and the assigned profiles / permission sets. |
+| `invalid_scope` | Settings → OAuth scopes asks for a scope (usually `web`) that the External Client App does not allow. Add it to the app, or remove it from Settings. |
+| **Open org** shows the login page | The connection has no `web` scope, so no one-time sign-in link could be made. See *OAuth Scopes* above. |
 | "Token exchange failed" | Make sure `start.bat` / `start.command` is still running. |
