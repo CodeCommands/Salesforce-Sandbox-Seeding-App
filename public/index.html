@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Sandbox Seeder</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b5cab'/%3E%3Cpath d='M9 20c0-5 4-9 9-9h5v3h-5a6 6 0 0 0-6 6v3H9z' fill='white'/%3E%3Ccircle cx='22' cy='21' r='3' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#view">Skip to content</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <div class="brand-name">Sandbox Seeder</div>
+        <div class="brand-plan muted small" id="plan-name"></div>
+      </div>
+    </div>
+    <nav class="tabs" aria-label="Steps">
+      <button class="tab" data-view="connect"><span class="tab-num">1</span>Connect</button>
+      <button class="tab" data-view="plan"><span class="tab-num">2</span>Build plan <span class="tab-count"></span></button>
+      <button class="tab" data-view="run"><span class="tab-num">3</span>Validate &amp; run</button>
+    </nav>
+    <div class="top-actions">
+      <button class="btn btn-ghost" id="btn-new" title="Start a new plan">New</button>
+      <button class="btn btn-ghost" id="btn-import" title="Load a .json template (or drop it on the page)">Import</button>
+      <button class="btn btn-ghost" id="btn-export" title="Download the plan as a .json template">Export</button>
+      <button class="icon-btn" id="btn-help" title="How it works" aria-label="Help">?</button>
+      <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">⚙</button>
+      <input type="file" id="file-import" accept=".json,application/json" hidden>
+    </div>
+  </header>
+  <div class="org-strip" id="org-strip" aria-label="Connected orgs"></div>
+  <main id="view" class="main" tabindex="-1"></main>
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  <noscript><p class="pad">This app needs JavaScript enabled.</p></noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

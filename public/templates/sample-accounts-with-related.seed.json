@@ -1,0 +1,76 @@
+{
+  "format": "sf-sandbox-seeding-template",
+  "schemaVersion": 1,
+  "name": "Sample: Technology accounts with related records",
+  "description": "50 recent Technology accounts plus their contacts, opportunities and cases. Lookups between them are preserved.",
+  "createdAt": "2026-11-04T00:00:00.000Z",
+  "updatedAt": "2026-11-04T00:00:00.000Z",
+  "settings": {
+    "preserveLookupsTo": [],
+    "allowDuplicateSave": true,
+    "disableAssignmentRules": true,
+    "batchSize": 200
+  },
+  "steps": [
+    {
+      "id": "accounts",
+      "order": 1,
+      "object": "Account",
+      "enabled": true,
+      "fieldMode": "all",
+      "fields": [],
+      "filters": [
+        { "field": "Industry", "operator": "eq", "value": "Technology" }
+      ],
+      "filterLogic": { "mode": "all", "expression": "" },
+      "advancedWhere": "",
+      "orderBy": { "field": "CreatedDate", "direction": "DESC" },
+      "limit": 50,
+      "parentScopes": []
+    },
+    {
+      "id": "contacts",
+      "order": 2,
+      "object": "Contact",
+      "enabled": true,
+      "fieldMode": "all",
+      "fields": [],
+      "filters": [],
+      "filterLogic": { "mode": "all", "expression": "" },
+      "advancedWhere": "",
+      "orderBy": null,
+      "limit": 250,
+      "parentScopes": [{ "field": "AccountId", "stepId": "accounts" }]
+    },
+    {
+      "id": "opportunities",
+      "order": 3,
+      "object": "Opportunity",
+      "enabled": true,
+      "fieldMode": "all",
+      "fields": [],
+      "filters": [
+        { "field": "IsClosed", "operator": "eq", "value": "false" }
+      ],
+      "filterLogic": { "mode": "all", "expression": "" },
+      "advancedWhere": "",
+      "orderBy": null,
+      "limit": 250,
+      "parentScopes": [{ "field": "AccountId", "stepId": "accounts" }]
+    },
+    {
+      "id": "cases",
+      "order": 4,
+      "object": "Case",
+      "enabled": true,
+      "fieldMode": "all",
+      "fields": [],
+      "filters": [],
+      "filterLogic": { "mode": "all", "expression": "" },
+      "advancedWhere": "",
+      "orderBy": null,
+      "limit": 250,
+      "parentScopes": [{ "field": "AccountId", "stepId": "accounts" }]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+# Exported plans and run outputs that may contain org details
+*-id-map.csv
+*-errors.csv
+*-log.txt
+.DS_Store
+Thumbs.db
+node_modules/

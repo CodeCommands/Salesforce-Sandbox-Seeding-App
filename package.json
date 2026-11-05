@@ -1,0 +1,9 @@
+{
+  "name": "sf-sandbox-seeder",
+  "private": true,
+  "description": "Development metadata only. The app itself needs no Node.js, npm or packages: run start.bat.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}
